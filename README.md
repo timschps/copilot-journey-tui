@@ -12,22 +12,34 @@ Built with [Textual](https://github.com/Textualize/textual) and the Catppuccin M
 
 ## Install
 
+**One-liner from GitHub** (recommended):
+
 ```bash
+pip install git+https://github.com/timschps/copilot-journey-tui
+```
+
+Then just run:
+
+```bash
+copilot-journey-tui
+```
+
+### Alternative install methods
+
+```bash
+# Clone and install locally
+git clone https://github.com/timschps/copilot-journey-tui && cd copilot-journey-tui
+pip install .
+
+# Or run without installing
 pip install textual
+python -m copilot_journey_tui
 ```
 
-## Usage
+### Custom database path
 
 ```bash
-python app.py
-```
-
-The TUI auto-detects your Copilot CLI session database at `~/.copilot/session-store.db`.
-
-Specify a custom path:
-
-```bash
-python app.py --db /path/to/session-store.db
+copilot-journey-tui --db /path/to/session-store.db
 ```
 
 ## Navigation

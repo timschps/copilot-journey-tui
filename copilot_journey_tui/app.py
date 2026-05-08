@@ -12,7 +12,7 @@ from textual.widgets import (
 
 from rich.text import Text
 
-from data import JourneyData, Phase, find_database, load_data
+from copilot_journey_tui.data import JourneyData, Phase, find_database, load_data
 
 # ── Phase metadata ──────────────────────────────────────────────────────────
 

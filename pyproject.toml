@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "copilot-journey-tui"
+version = "0.1.0"
+description = "Beautiful TUI dashboard for your GitHub Copilot CLI learning journey"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Tim Schaeps" }]
+keywords = ["copilot", "github", "tui", "terminal", "dashboard", "learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "textual>=0.70",
+]
+
+[project.scripts]
+copilot-journey-tui = "copilot_journey_tui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/timschps/copilot-journey-tui"
+Repository = "https://github.com/timschps/copilot-journey-tui"
