@@ -82,6 +82,24 @@ class ROIEstimate:
 
 
 @dataclass
+class RepoProfile:
+    """Per-repo adoption profile built from actual session data."""
+    name: str                          # e.g. "timschps/hotelsite-demo"
+    session_count: int = 0
+    file_count: int = 0
+    top_extensions: list = field(default_factory=list)  # [(ext, count), ...]
+    has_copilot_instructions: bool = False
+    has_custom_instructions: bool = False
+    has_skills: bool = False
+    has_mcp_config: bool = False
+    has_context_md: bool = False
+    has_tests: bool = False
+    has_docs: bool = False
+    has_cicd: bool = False
+    primary_language: str = ""         # dominant extension
+
+
+@dataclass
 class HabitsData:
     """Usage habit insights derived from session patterns."""
     hour_distribution: dict = field(default_factory=dict)  # hour → count
@@ -115,6 +133,7 @@ class HabitsData:
     doc_session_count: int = 0
     cicd_session_count: int = 0
     instruction_files_found: list = field(default_factory=list)
+    repo_profiles: list = field(default_factory=list)  # list[RepoProfile]
 
 
 @dataclass
@@ -309,9 +328,10 @@ def _detect_best_practice_signals(conn, file_paths: list[str]) -> dict:
         "test_sessions": 0,
         "doc_sessions": 0,
         "cicd_sessions": 0,
+        "repo_profiles": [],
     }
 
-    # Check file_paths we already loaded for known patterns
+    # Global file-path checks
     for fp in file_paths:
         fpl = fp.lower().replace("\\", "/")
         if "copilot-instructions.md" in fpl:
@@ -326,30 +346,72 @@ def _detect_best_practice_signals(conn, file_paths: list[str]) -> dict:
             signals["has_mcp_config"] = True
 
     # Count sessions touching tests, docs, CI/CD
+    for label, pattern_sql, key in [
+        ("test", "file_path LIKE '%test%' OR file_path LIKE '%spec%'", "test_sessions"),
+        ("doc", "file_path LIKE '%README%' OR file_path LIKE '%docs/%'", "doc_sessions"),
+        ("cicd",
+         "file_path LIKE '%.github/workflows%' OR file_path LIKE '%Dockerfile%' "
+         "OR file_path LIKE '%azure-pipelines%'", "cicd_sessions"),
+    ]:
+        try:
+            r = conn.execute(
+                f"SELECT COUNT(DISTINCT session_id) FROM session_files WHERE {pattern_sql}"
+            ).fetchone()
+            signals[key] = r[0] if r else 0
+        except Exception:
+            pass
+
+    # ── Build per-repo profiles ──
     try:
-        r = conn.execute(
-            "SELECT COUNT(DISTINCT session_id) FROM session_files "
-            "WHERE file_path LIKE '%test%' OR file_path LIKE '%spec%'"
-        ).fetchone()
-        signals["test_sessions"] = r[0] if r else 0
-    except Exception:
-        pass
-    try:
-        r = conn.execute(
-            "SELECT COUNT(DISTINCT session_id) FROM session_files "
-            "WHERE file_path LIKE '%README%' OR file_path LIKE '%docs/%'"
-        ).fetchone()
-        signals["doc_sessions"] = r[0] if r else 0
-    except Exception:
-        pass
-    try:
-        r = conn.execute(
-            "SELECT COUNT(DISTINCT session_id) FROM session_files "
-            "WHERE file_path LIKE '%.github/workflows%' "
-            "OR file_path LIKE '%Dockerfile%' "
-            "OR file_path LIKE '%azure-pipelines%'"
-        ).fetchone()
-        signals["cicd_sessions"] = r[0] if r else 0
+        repo_rows = conn.execute(
+            "SELECT s.repository, COUNT(DISTINCT s.id) as sess_cnt "
+            "FROM sessions s "
+            "WHERE s.repository IS NOT NULL AND s.repository != '' "
+            "GROUP BY s.repository ORDER BY sess_cnt DESC"
+        ).fetchall()
+
+        from collections import Counter as _Counter
+
+        for repo_name, sess_cnt in repo_rows:
+            rp = RepoProfile(name=repo_name, session_count=sess_cnt)
+            # Get all files touched in this repo
+            file_rows = conn.execute(
+                "SELECT DISTINCT sf.file_path FROM session_files sf "
+                "JOIN sessions s ON sf.session_id = s.id "
+                "WHERE s.repository = ?", (repo_name,)
+            ).fetchall()
+            repo_files = [r[0] for r in file_rows]
+            rp.file_count = len(repo_files)
+
+            ext_ctr = _Counter()
+            for fp in repo_files:
+                fpl = fp.lower().replace("\\", "/")
+                import os as _os
+                ext = _os.path.splitext(fp)[1]
+                if ext:
+                    ext_ctr[ext] += 1
+                if "copilot-instructions.md" in fpl:
+                    rp.has_copilot_instructions = True
+                if ".instructions.md" in fpl and "copilot-instructions" not in fpl:
+                    rp.has_custom_instructions = True
+                if fpl.endswith("skill.md"):
+                    rp.has_skills = True
+                if "mcp.json" in fpl:
+                    rp.has_mcp_config = True
+                if ".context.md" in fpl:
+                    rp.has_context_md = True
+                if "test" in fpl or "spec" in fpl:
+                    rp.has_tests = True
+                if "readme" in fpl or "/docs/" in fpl:
+                    rp.has_docs = True
+                if ".github/workflows" in fpl or "dockerfile" in fpl or "azure-pipelines" in fpl:
+                    rp.has_cicd = True
+
+            rp.top_extensions = ext_ctr.most_common(5)
+            if rp.top_extensions:
+                rp.primary_language = rp.top_extensions[0][0]
+
+            signals["repo_profiles"].append(rp)
     except Exception:
         pass
 
@@ -577,6 +639,7 @@ def _compute_habits(sessions: list[Session], file_paths: list[str],
     h.doc_session_count = bp_signals.get("doc_sessions", 0)
     h.cicd_session_count = bp_signals.get("cicd_sessions", 0)
     h.instruction_files_found = bp_signals.get("instruction_files", [])
+    h.repo_profiles = bp_signals.get("repo_profiles", [])
 
     # Top repos
     repo_counter: Counter = Counter()
@@ -679,67 +742,109 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     n = len(sessions)
 
     # ═══════════════════════════════════════════════════════════════════════
-    # BEST PRACTICES — Copilot configuration & workflow optimization
+    # BEST PRACTICES — repo-specific tips based on actual adoption gaps
     # ═══════════════════════════════════════════════════════════════════════
 
-    if not habits.has_copilot_instructions:
+    profiles = habits.repo_profiles
+    # Short repo name (strip owner prefix for display)
+    def _short(repo: str) -> str:
+        return repo.split("/")[-1] if "/" in repo else repo
+
+    # ── copilot-instructions.md ──
+    repos_missing_instructions = [
+        rp for rp in profiles if not rp.has_copilot_instructions and rp.session_count >= 2
+    ]
+    repos_with_instructions = [rp for rp in profiles if rp.has_copilot_instructions]
+
+    if repos_missing_instructions:
+        names = ", ".join(_short(rp.name) for rp in repos_missing_instructions[:4])
         tips.append(Tip(
             "📋", "Add copilot-instructions.md",
-            "You don't have a copilot-instructions.md yet. This file gives "
-            "Copilot project-specific context — coding standards, preferred "
-            "libraries, naming conventions — so every response fits YOUR project.",
+            f"{len(repos_missing_instructions)} active repo(s) lack a copilot-instructions.md: "
+            f"[b]{names}[/b]. This file gives Copilot project-specific context — "
+            "coding standards, preferred libraries, naming conventions.",
             priority=10, category="best-practice",
             how_to=(
-                "Create .github/copilot-instructions.md in your repo root:\n"
+                "Start with your most active repo. Create\n"
+                ".github/copilot-instructions.md:\n"
                 "  ─────────────────────────────────\n"
+                + "\n".join(
+                    f"  → {rp.name} ({rp.primary_language or 'mixed'})"
+                    for rp in repos_missing_instructions[:4]
+                ) + "\n"
+                "  ─────────────────────────────────\n"
+                "  # Project instructions for Copilot\n"
+                "  - Language/framework preferences\n"
+                "  - Coding standards & patterns\n"
+                "  - Libraries to use or avoid\n"
+                "  - Error handling conventions"
+            ),
+        ))
+    elif repos_with_instructions:
+        names = ", ".join(_short(rp.name) for rp in repos_with_instructions[:3])
+        tips.append(Tip(
+            "✅", "Instructions file in place",
+            f"Great — {names} already {'has' if len(repos_with_instructions) == 1 else 'have'} "
+            "copilot-instructions.md! Keep it updated as your project evolves.",
+            priority=1, category="best-practice",
+        ))
+    elif not habits.has_copilot_instructions:
+        tips.append(Tip(
+            "📋", "Add copilot-instructions.md",
+            "No copilot-instructions.md found in any repo. This file is the #1 "
+            "way to improve Copilot's output — it learns your project's conventions.",
+            priority=10, category="best-practice",
+            how_to=(
+                "Create .github/copilot-instructions.md:\n"
                 "  # Project instructions for Copilot\n"
                 "  - Use TypeScript with strict mode\n"
                 "  - Prefer functional components\n"
-                "  - Use Tailwind for styling\n"
-                "  - Error handling: always use Result types\n"
-                "  - Tests: use Vitest, not Jest\n"
-                "  ─────────────────────────────────\n"
-                "Copilot reads this automatically for every session in the repo."
+                "  - Error handling: always use Result types\n\n"
+                "Copilot reads this automatically in every session."
             ),
         ))
     else:
         tips.append(Tip(
             "✅", "Instructions file in place",
-            "Great — you already have copilot-instructions.md! Keep it updated "
-            "as your project evolves. Add patterns you find yourself repeating "
-            "in prompts.",
+            "copilot-instructions.md detected — keep it updated as your project evolves.",
             priority=1, category="best-practice",
         ))
 
-    if not habits.has_custom_instructions:
+    # ── Custom instruction files ──
+    repos_without_custom = [
+        rp for rp in profiles
+        if not rp.has_custom_instructions and rp.session_count >= 2
+    ]
+    if repos_without_custom and not habits.has_custom_instructions:
+        names = ", ".join(_short(rp.name) for rp in repos_without_custom[:3])
         tips.append(Tip(
             "🎯", "Use custom instruction files",
-            "Beyond the main copilot-instructions.md, you can create scoped "
-            "instruction files for specific concerns — testing, security, "
-            "accessibility, API design — each loaded only when relevant.",
+            f"None of your active repos ({names}) use scoped .instructions.md files. "
+            "These let you define per-concern rules (testing, security, API design) "
+            "that auto-apply based on file patterns.",
             priority=9, category="best-practice",
             how_to=(
-                "Create files like:\n"
+                "Create scoped instruction files in any repo:\n"
                 "  .github/instructions/testing.instructions.md\n"
-                "  .github/instructions/security.instructions.md\n"
-                "  .github/instructions/api-design.instructions.md\n\n"
-                "Each can have a glob pattern to auto-apply:\n"
+                "  .github/instructions/security.instructions.md\n\n"
+                "With auto-apply glob:\n"
                 "  ---\n"
                 "  applyTo: \"**/*.test.ts\"\n"
                 "  ---\n"
                 "  # Testing guidelines\n"
                 "  - Use describe/it blocks\n"
-                "  - Mock external services\n"
-                "  - Assert behavior, not implementation"
+                "  - Mock external services\n\n"
+                "Best candidates:\n"
+                + "\n".join(f"  → {rp.name}" for rp in repos_without_custom[:3])
             ),
         ))
 
+    # ── MCP config ──
     if not habits.has_mcp_config:
         tips.append(Tip(
             "🔌", "Set up MCP servers",
             "MCP (Model Context Protocol) lets Copilot connect to external "
-            "tools — databases, APIs, Azure, custom services. It's like giving "
-            "Copilot hands to actually do things, not just suggest code.",
+            "tools — databases, APIs, Azure. Like giving Copilot hands to do things.",
             priority=7, category="best-practice",
             how_to=(
                 "Create ~/.copilot/mcp.json:\n"
@@ -751,23 +856,27 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "      }\n"
                 "    }\n"
                 "  }\n\n"
-                "Popular MCP servers: GitHub, Azure, filesystem, databases."
+                "Popular: GitHub, Azure, filesystem, databases."
             ),
         ))
     else:
         tips.append(Tip(
             "✅", "MCP configured",
-            "You have MCP servers set up — you're ahead of most users! "
+            "MCP servers set up — you're ahead of most users! "
             "Consider adding more servers as you discover new workflows.",
             priority=1, category="best-practice",
         ))
 
-    if not habits.has_skills:
+    # ── Skills ──
+    repos_without_skills = [
+        rp for rp in profiles if not rp.has_skills and rp.session_count >= 2
+    ]
+    if repos_without_skills and not habits.has_skills:
+        names = ", ".join(_short(rp.name) for rp in repos_without_skills[:3])
         tips.append(Tip(
             "⚡", "Build a custom skill",
-            "Skills are reusable Copilot capabilities defined in SKILL.md files. "
-            "They encapsulate domain knowledge so Copilot handles specialized "
-            "tasks — deploy scripts, code reviews, data transforms — on command.",
+            f"No SKILL.md files found. Skills encapsulate reusable Copilot workflows "
+            f"— deploy checkers, code reviewers, data transforms. Try in: [b]{names}[/b].",
             priority=6, category="best-practice",
             how_to=(
                 "Create skills/<name>/SKILL.md in your repo:\n"
@@ -779,46 +888,87 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "  ## Steps\n"
                 "  1. Check for uncommitted changes\n"
                 "  2. Run test suite\n"
-                "  3. Validate env variables\n"
-                "  4. Confirm target environment\n\n"
-                "Then invoke with: @skill deploy-checker"
+                "  3. Validate env variables\n\n"
+                "Best candidates:\n"
+                + "\n".join(f"  → {rp.name}" for rp in repos_without_skills[:3])
             ),
         ))
 
-    # ── Context enrichment tips ──
-    tips.append(Tip(
-        "📁", "Use a .context.md file",
-        "Place .context.md files in project directories to give Copilot "
-        "architecture context — component relationships, data flows, "
-        "design decisions. Copilot reads these when working in that folder.",
-        priority=8, category="best-practice",
-        how_to=(
-            "Create .context.md in any directory:\n"
-            "  # Authentication Module\n"
-            "  ## Architecture\n"
-            "  - JWT tokens stored in httpOnly cookies\n"
-            "  - Refresh token rotation on each use\n"
-            "  - auth.service.ts handles all token logic\n"
-            "  ## Dependencies\n"
-            "  - Calls user-service for profile data\n"
-            "  - Redis for session blacklist\n"
-            "  ## Invariants\n"
-            "  - Tokens expire after 15 minutes\n"
-            "  - Never log token values"
-        ),
-    ))
+    # ── .context.md — per-repo ──
+    repos_without_context = [
+        rp for rp in profiles if not rp.has_context_md and rp.file_count >= 5
+    ]
+    if repos_without_context:
+        names = ", ".join(_short(rp.name) for rp in repos_without_context[:4])
+        tips.append(Tip(
+            "📁", "Add .context.md for architecture context",
+            f"{len(repos_without_context)} repo(s) lack .context.md files: "
+            f"[b]{names}[/b]. These give Copilot architecture awareness — component "
+            "relationships, data flows, design decisions.",
+            priority=8, category="best-practice",
+            how_to=(
+                "Create .context.md in key directories:\n"
+                + "\n".join(
+                    f"  → {rp.name}/ ({rp.primary_language or 'mixed'}, "
+                    f"{rp.file_count} files)"
+                    for rp in repos_without_context[:4]
+                ) + "\n\n"
+                "Example content:\n"
+                "  # Authentication Module\n"
+                "  ## Architecture\n"
+                "  - JWT tokens in httpOnly cookies\n"
+                "  ## Dependencies\n"
+                "  - Calls user-service for profile data\n"
+                "  ## Invariants\n"
+                "  - Tokens expire after 15 minutes"
+            ),
+        ))
+
+    # ── Testing — per-repo ──
+    repos_without_tests = [
+        rp for rp in profiles if not rp.has_tests and rp.file_count >= 3
+    ]
+    if repos_without_tests:
+        names = ", ".join(_short(rp.name) for rp in repos_without_tests[:3])
+        lang_hint = repos_without_tests[0].primary_language or "your language"
+        tips.append(Tip(
+            "🧪", "Add tests with Copilot",
+            f"{len(repos_without_tests)} repo(s) have no test files: "
+            f"[b]{names}[/b]. Copilot excels at generating tests — it's one "
+            "of the highest-ROI use cases.",
+            priority=8, category="best-practice",
+            how_to=(
+                "Start with your most active untested repo:\n"
+                + "\n".join(
+                    f"  → {rp.name} ({rp.primary_language or 'mixed'})"
+                    for rp in repos_without_tests[:3]
+                ) + "\n\n"
+                "High-impact prompts:\n"
+                f'  "Write unit tests for the main module\n'
+                f'   covering edge cases and error paths"\n\n'
+                '  "Look at the existing code and generate\n'
+                '   matching tests with good coverage"'
+            ),
+        ))
+    else:
+        test_pct = habits.test_session_count / max(n, 1)
+        if test_pct < 0.1:
+            tips.append(Tip(
+                "🧪", "Use Copilot for testing more",
+                f"Only {habits.test_session_count} of {n} sessions touched test files "
+                f"({test_pct:.0%}). Try: 'write tests for this module' more often.",
+                priority=8, category="best-practice",
+            ))
 
     tips.append(Tip(
         "📌", "Pin key files with prompt starters",
         "Start complex prompts by referencing key files explicitly. This "
-        "grounds Copilot in your actual code rather than generic patterns. "
-        "Reference the schema, the interface, or the test you want to match.",
+        "grounds Copilot in your actual code rather than generic patterns.",
         priority=7, category="best-practice",
         how_to=(
             "Example prompt patterns:\n"
             '  "Look at src/models/user.ts and add a\n'
-            '   resetPassword method following the same pattern\n'
-            '   as updateEmail"\n\n'
+            '   resetPassword method following the same pattern"\n\n'
             '  "Based on the schema in prisma/schema.prisma,\n'
             '   generate a migration for adding a teams table"\n\n'
             '  "Match the test style in tests/auth.test.ts\n'
@@ -826,66 +976,52 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
         ),
     ))
 
-    # ── Testing best practice ──
-    test_pct = habits.test_session_count / max(n, 1)
-    if test_pct < 0.1:
-        tips.append(Tip(
-            "🧪", "Use Copilot for testing",
-            f"Only {habits.test_session_count} of {n} sessions touched test files "
-            f"({test_pct:.0%}). Copilot excels at generating tests — it's one "
-            "of the highest-ROI use cases. Try: 'write tests for this module'.",
-            priority=8, category="best-practice",
-            how_to=(
-                "High-impact testing prompts:\n"
-                '  "Write unit tests for user.service.ts\n'
-                '   covering edge cases and error paths"\n\n'
-                '  "Generate integration tests for the /api/orders\n'
-                '   endpoint, mocking the database layer"\n\n'
-                '  "Look at the existing test in auth.test.ts and\n'
-                '   write matching tests for billing.service.ts"\n\n'
-                "Add a testing.instructions.md to ensure consistent\n"
-                "test style across all generated tests."
-            ),
-        ))
-
-    # ── Documentation best practice ──
+    # ── Documentation — per-repo ──
+    repos_without_docs = [
+        rp for rp in profiles if not rp.has_docs and rp.file_count >= 3
+    ]
     doc_pct = habits.doc_session_count / max(n, 1)
-    if doc_pct < 0.1:
+    if repos_without_docs and doc_pct < 0.15:
+        names = ", ".join(_short(rp.name) for rp in repos_without_docs[:3])
         tips.append(Tip(
             "📖", "Generate docs with Copilot",
-            f"Only {habits.doc_session_count} sessions touched documentation files. "
-            "Copilot can generate READMEs, API docs, architecture decision records, "
-            "and inline JSDoc/docstrings from your existing code.",
+            f"{len(repos_without_docs)} repo(s) lack README/docs: [b]{names}[/b]. "
+            "Copilot can generate READMEs, API docs, and architecture decision records.",
             priority=5, category="best-practice",
             how_to=(
-                "Documentation prompts:\n"
-                '  "Generate a README.md for this project based\n'
-                '   on the code structure and package.json"\n\n'
-                '  "Add JSDoc comments to all exported functions\n'
-                '   in src/utils/"\n\n'
-                '  "Write an ADR (Architecture Decision Record)\n'
-                '   for our choice to use event sourcing"\n\n'
-                '  "Generate a CONTRIBUTING.md with setup steps,\n'
-                '   coding standards, and PR guidelines"'
+                "Start here:\n"
+                + "\n".join(
+                    f"  → {rp.name}: 'Generate a README.md based on the code'"
+                    for rp in repos_without_docs[:3]
+                ) + "\n\n"
+                "More doc prompts:\n"
+                '  "Add docstrings to all exported functions"\n'
+                '  "Write an ADR for our architecture choice"\n'
+                '  "Generate a CONTRIBUTING.md with setup steps"'
             ),
         ))
 
-    # ── CI/CD best practice ──
-    if habits.cicd_session_count < 2:
+    # ── CI/CD — per-repo ──
+    repos_without_cicd = [
+        rp for rp in profiles if not rp.has_cicd and rp.file_count >= 5
+    ]
+    if repos_without_cicd and habits.cicd_session_count < 3:
+        names = ", ".join(_short(rp.name) for rp in repos_without_cicd[:3])
         tips.append(Tip(
-            "🚀", "Automate with Copilot + CI/CD",
-            "You've barely used Copilot for CI/CD workflows. It can generate "
-            "GitHub Actions, Dockerfiles, and deployment configs — often faster "
-            "than writing YAML by hand.",
+            "🚀", "Add CI/CD with Copilot",
+            f"{len(repos_without_cicd)} repo(s) lack CI/CD configs: [b]{names}[/b]. "
+            "Copilot can generate GitHub Actions, Dockerfiles, and deploy configs.",
             priority=5, category="best-practice",
             how_to=(
-                "CI/CD prompts:\n"
+                "Best candidates:\n"
+                + "\n".join(
+                    f"  → {rp.name} ({rp.primary_language or 'mixed'})"
+                    for rp in repos_without_cicd[:3]
+                ) + "\n\n"
+                "Prompts:\n"
                 '  "Create a GitHub Actions workflow that runs\n'
-                '   tests on PR and deploys to Azure on merge"\n\n'
-                '  "Write a multi-stage Dockerfile for this\n'
-                '   Node.js app with a production build"\n\n'
-                '  "Generate a Bicep template for an Azure\n'
-                '   Container App with a managed identity"'
+                '   tests on PR and deploys on merge to main"\n\n'
+                '  "Write a multi-stage Dockerfile for this app"'
             ),
         ))
 
