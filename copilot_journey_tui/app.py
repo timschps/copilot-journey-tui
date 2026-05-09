@@ -343,9 +343,39 @@ class WalkthroughPane(Static):
 class TipsPane(Static):
     """Tips tab — actionable recommendations based on usage patterns."""
 
+    CAT_LABELS = {
+        "best-practice": ("🛠️", "Best Practices", "#89dceb"),
+        "habit": ("📊", "Usage Habits", "#f9e2af"),
+        "phase": ("🎯", "Phase Progression", "#cba6f7"),
+        "": ("💡", "General", "#cdd6f4"),
+    }
+
     def __init__(self, data: JourneyData) -> None:
         super().__init__()
         self.data = data
+
+    def _render_tip(self, tip) -> str:
+        priority_color = (
+            "#f38ba8" if tip.priority >= 8 else
+            "#f9e2af" if tip.priority >= 5 else
+            "#a6e3a1"
+        )
+        prio_label = (
+            "HIGH" if tip.priority >= 8 else
+            "MED" if tip.priority >= 5 else
+            "NICE"
+        )
+        lines = [
+            f"  {tip.emoji} [b]{tip.title}[/b]  "
+            f"[{priority_color}]({prio_label})[/{priority_color}]\n",
+            f"  {tip.body}",
+        ]
+        if tip.how_to:
+            lines.append(f"\n  [dim]{'─' * 34}[/dim]")
+            lines.append(f"  [#89dceb][b]How to:[/b][/#89dceb]")
+            for ht_line in tip.how_to.split("\n"):
+                lines.append(f"  [dim]{ht_line}[/dim]")
+        return "\n".join(lines)
 
     def compose(self) -> ComposeResult:
         tips = self.data.tips
@@ -353,50 +383,47 @@ class TipsPane(Static):
             yield Static("  ✅ No tips — you're doing great!", classes="card")
             return
 
+        # Count by category
+        cats = {}
+        for t in tips:
+            cat = t.category or ""
+            if cat not in cats:
+                cats[cat] = []
+            cats[cat].append(t)
+
+        bp_count = len(cats.get("best-practice", []))
+        habit_count = len(cats.get("habit", []))
         yield Label(
             f"[b]💡 {len(tips)} Personalized Tips[/b]  "
-            "[dim](based on your actual usage patterns)[/dim]",
+            f"[dim]({bp_count} best practices · {habit_count} habit insights)[/dim]",
             classes="section-label",
         )
 
-        # Show tips in pairs (2-column)
-        for i in range(0, len(tips), 2):
-            with Horizontal(classes="row"):
-                tip = tips[i]
-                priority_color = (
-                    "#f38ba8" if tip.priority >= 8 else
-                    "#f9e2af" if tip.priority >= 5 else
-                    "#a6e3a1"
-                )
-                prio_label = (
-                    "HIGH" if tip.priority >= 8 else
-                    "MEDIUM" if tip.priority >= 5 else
-                    "NICE"
-                )
-                yield Static(
-                    f"  {tip.emoji} [b]{tip.title}[/b]  "
-                    f"[{priority_color}]({prio_label})[/{priority_color}]\n\n"
-                    f"  {tip.body}",
-                    classes="card tip-card",
-                )
-                if i + 1 < len(tips):
-                    tip2 = tips[i + 1]
-                    pc2 = (
-                        "#f38ba8" if tip2.priority >= 8 else
-                        "#f9e2af" if tip2.priority >= 5 else
-                        "#a6e3a1"
-                    )
-                    pl2 = (
-                        "HIGH" if tip2.priority >= 8 else
-                        "MEDIUM" if tip2.priority >= 5 else
-                        "NICE"
-                    )
+        # Show each category
+        cat_order = ["best-practice", "habit", "phase", ""]
+        for cat in cat_order:
+            cat_tips = cats.get(cat, [])
+            if not cat_tips:
+                continue
+
+            emoji, label, color = self.CAT_LABELS.get(cat, ("💡", "Tips", "#cdd6f4"))
+            yield Label(
+                f"  [{color}]{emoji} {label}[/{color}]  "
+                f"[dim]({len(cat_tips)} tips)[/dim]",
+                classes="section-label",
+            )
+
+            for i in range(0, len(cat_tips), 2):
+                with Horizontal(classes="row"):
                     yield Static(
-                        f"  {tip2.emoji} [b]{tip2.title}[/b]  "
-                        f"[{pc2}]({pl2})[/{pc2}]\n\n"
-                        f"  {tip2.body}",
+                        self._render_tip(cat_tips[i]),
                         classes="card tip-card",
                     )
+                    if i + 1 < len(cat_tips):
+                        yield Static(
+                            self._render_tip(cat_tips[i + 1]),
+                            classes="card tip-card",
+                        )
 
 
 # ── Main app ────────────────────────────────────────────────────────────────

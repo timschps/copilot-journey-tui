@@ -106,6 +106,15 @@ class HabitsData:
     night: int = 0       # 22-6
     active_dates: list = field(default_factory=list)        # sorted date strings
     checkpoint_topics: list = field(default_factory=list)   # recent checkpoint titles
+    # Best-practice detection signals
+    has_copilot_instructions: bool = False
+    has_custom_instructions: bool = False
+    has_skills: bool = False
+    has_mcp_config: bool = False
+    test_session_count: int = 0
+    doc_session_count: int = 0
+    cicd_session_count: int = 0
+    instruction_files_found: list = field(default_factory=list)
 
 
 @dataclass
@@ -114,6 +123,8 @@ class Tip:
     title: str
     body: str
     priority: int = 0  # higher = more relevant
+    category: str = ""  # "habit", "best-practice", "phase"
+    how_to: str = ""  # actionable how-to steps
 
 
 @dataclass
@@ -280,12 +291,73 @@ def load_data(db_path: str) -> JourneyData:
     except Exception:
         pass
 
+    # Detect best-practice signals from file paths
+    bp_signals = _detect_best_practice_signals(conn, file_paths)
+
     conn.close()
-    return _analyze(sessions, file_paths, checkpoint_topics)
+    return _analyze(sessions, file_paths, checkpoint_topics, bp_signals)
+
+
+def _detect_best_practice_signals(conn, file_paths: list[str]) -> dict:
+    """Scan session history for Copilot best-practice adoption signals."""
+    signals: dict = {
+        "has_copilot_instructions": False,
+        "has_custom_instructions": False,
+        "has_skills": False,
+        "has_mcp_config": False,
+        "instruction_files": [],
+        "test_sessions": 0,
+        "doc_sessions": 0,
+        "cicd_sessions": 0,
+    }
+
+    # Check file_paths we already loaded for known patterns
+    for fp in file_paths:
+        fpl = fp.lower().replace("\\", "/")
+        if "copilot-instructions.md" in fpl:
+            signals["has_copilot_instructions"] = True
+            signals["instruction_files"].append(fp)
+        if ".instructions.md" in fpl and "copilot-instructions" not in fpl:
+            signals["has_custom_instructions"] = True
+            signals["instruction_files"].append(fp)
+        if fpl.endswith("skill.md"):
+            signals["has_skills"] = True
+        if "mcp.json" in fpl:
+            signals["has_mcp_config"] = True
+
+    # Count sessions touching tests, docs, CI/CD
+    try:
+        r = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM session_files "
+            "WHERE file_path LIKE '%test%' OR file_path LIKE '%spec%'"
+        ).fetchone()
+        signals["test_sessions"] = r[0] if r else 0
+    except Exception:
+        pass
+    try:
+        r = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM session_files "
+            "WHERE file_path LIKE '%README%' OR file_path LIKE '%docs/%'"
+        ).fetchone()
+        signals["doc_sessions"] = r[0] if r else 0
+    except Exception:
+        pass
+    try:
+        r = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM session_files "
+            "WHERE file_path LIKE '%.github/workflows%' "
+            "OR file_path LIKE '%Dockerfile%' "
+            "OR file_path LIKE '%azure-pipelines%'"
+        ).fetchone()
+        signals["cicd_sessions"] = r[0] if r else 0
+    except Exception:
+        pass
+
+    return signals
 
 
 def _analyze(sessions: list[Session], file_paths: list[str],
-             checkpoint_topics: list[str]) -> JourneyData:
+             checkpoint_topics: list[str], bp_signals: dict) -> JourneyData:
     active_days_set: set[str] = set()
     repos: set[str] = set()
     total_turns = total_files = 0
@@ -321,7 +393,7 @@ def _analyze(sessions: list[Session], file_paths: list[str],
     current_score = windows[-1].score if windows else 0
 
     habits = _compute_habits(sessions, file_paths, hour_counter, day_counter,
-                             active_days_set, checkpoint_topics)
+                             active_days_set, checkpoint_topics, bp_signals)
     tips = _generate_tips(sessions, habits, windows, current_phase)
 
     return JourneyData(
@@ -487,13 +559,24 @@ def _calculate_roi(sessions: list[Session]) -> ROIEstimate:
 def _compute_habits(sessions: list[Session], file_paths: list[str],
                     hour_counter: Counter, day_counter: Counter,
                     active_days_set: set[str],
-                    checkpoint_topics: list[str]) -> HabitsData:
+                    checkpoint_topics: list[str],
+                    bp_signals: dict) -> HabitsData:
     h = HabitsData()
     h.hour_distribution = dict(hour_counter)
     h.day_distribution = dict(day_counter)
     h.peak_hour = hour_counter.most_common(1)[0][0] if hour_counter else 9
     h.peak_day = day_counter.most_common(1)[0][0] if day_counter else "Mon"
     h.checkpoint_topics = checkpoint_topics[:15]
+
+    # Best-practice signals
+    h.has_copilot_instructions = bp_signals.get("has_copilot_instructions", False)
+    h.has_custom_instructions = bp_signals.get("has_custom_instructions", False)
+    h.has_skills = bp_signals.get("has_skills", False)
+    h.has_mcp_config = bp_signals.get("has_mcp_config", False)
+    h.test_session_count = bp_signals.get("test_sessions", 0)
+    h.doc_session_count = bp_signals.get("doc_sessions", 0)
+    h.cicd_session_count = bp_signals.get("cicd_sessions", 0)
+    h.instruction_files_found = bp_signals.get("instruction_files", [])
 
     # Top repos
     repo_counter: Counter = Counter()
@@ -595,144 +678,431 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     tips: list[Tip] = []
     n = len(sessions)
 
-    # ── Consistency tips ──
+    # ═══════════════════════════════════════════════════════════════════════
+    # BEST PRACTICES — Copilot configuration & workflow optimization
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if not habits.has_copilot_instructions:
+        tips.append(Tip(
+            "📋", "Add copilot-instructions.md",
+            "You don't have a copilot-instructions.md yet. This file gives "
+            "Copilot project-specific context — coding standards, preferred "
+            "libraries, naming conventions — so every response fits YOUR project.",
+            priority=10, category="best-practice",
+            how_to=(
+                "Create .github/copilot-instructions.md in your repo root:\n"
+                "  ─────────────────────────────────\n"
+                "  # Project instructions for Copilot\n"
+                "  - Use TypeScript with strict mode\n"
+                "  - Prefer functional components\n"
+                "  - Use Tailwind for styling\n"
+                "  - Error handling: always use Result types\n"
+                "  - Tests: use Vitest, not Jest\n"
+                "  ─────────────────────────────────\n"
+                "Copilot reads this automatically for every session in the repo."
+            ),
+        ))
+    else:
+        tips.append(Tip(
+            "✅", "Instructions file in place",
+            "Great — you already have copilot-instructions.md! Keep it updated "
+            "as your project evolves. Add patterns you find yourself repeating "
+            "in prompts.",
+            priority=1, category="best-practice",
+        ))
+
+    if not habits.has_custom_instructions:
+        tips.append(Tip(
+            "🎯", "Use custom instruction files",
+            "Beyond the main copilot-instructions.md, you can create scoped "
+            "instruction files for specific concerns — testing, security, "
+            "accessibility, API design — each loaded only when relevant.",
+            priority=9, category="best-practice",
+            how_to=(
+                "Create files like:\n"
+                "  .github/instructions/testing.instructions.md\n"
+                "  .github/instructions/security.instructions.md\n"
+                "  .github/instructions/api-design.instructions.md\n\n"
+                "Each can have a glob pattern to auto-apply:\n"
+                "  ---\n"
+                "  applyTo: \"**/*.test.ts\"\n"
+                "  ---\n"
+                "  # Testing guidelines\n"
+                "  - Use describe/it blocks\n"
+                "  - Mock external services\n"
+                "  - Assert behavior, not implementation"
+            ),
+        ))
+
+    if not habits.has_mcp_config:
+        tips.append(Tip(
+            "🔌", "Set up MCP servers",
+            "MCP (Model Context Protocol) lets Copilot connect to external "
+            "tools — databases, APIs, Azure, custom services. It's like giving "
+            "Copilot hands to actually do things, not just suggest code.",
+            priority=7, category="best-practice",
+            how_to=(
+                "Create ~/.copilot/mcp.json:\n"
+                "  {\n"
+                '    "mcpServers": {\n'
+                '      "github": {\n'
+                '        "command": "npx",\n'
+                '        "args": ["-y","@modelcontextprotocol/server-github"]\n'
+                "      }\n"
+                "    }\n"
+                "  }\n\n"
+                "Popular MCP servers: GitHub, Azure, filesystem, databases."
+            ),
+        ))
+    else:
+        tips.append(Tip(
+            "✅", "MCP configured",
+            "You have MCP servers set up — you're ahead of most users! "
+            "Consider adding more servers as you discover new workflows.",
+            priority=1, category="best-practice",
+        ))
+
+    if not habits.has_skills:
+        tips.append(Tip(
+            "⚡", "Build a custom skill",
+            "Skills are reusable Copilot capabilities defined in SKILL.md files. "
+            "They encapsulate domain knowledge so Copilot handles specialized "
+            "tasks — deploy scripts, code reviews, data transforms — on command.",
+            priority=6, category="best-practice",
+            how_to=(
+                "Create skills/<name>/SKILL.md in your repo:\n"
+                "  ---\n"
+                "  name: deploy-checker\n"
+                "  description: Validates deploy readiness\n"
+                "  ---\n"
+                "  # Deploy Checker\n"
+                "  ## Steps\n"
+                "  1. Check for uncommitted changes\n"
+                "  2. Run test suite\n"
+                "  3. Validate env variables\n"
+                "  4. Confirm target environment\n\n"
+                "Then invoke with: @skill deploy-checker"
+            ),
+        ))
+
+    # ── Context enrichment tips ──
+    tips.append(Tip(
+        "📁", "Use a .context.md file",
+        "Place .context.md files in project directories to give Copilot "
+        "architecture context — component relationships, data flows, "
+        "design decisions. Copilot reads these when working in that folder.",
+        priority=8, category="best-practice",
+        how_to=(
+            "Create .context.md in any directory:\n"
+            "  # Authentication Module\n"
+            "  ## Architecture\n"
+            "  - JWT tokens stored in httpOnly cookies\n"
+            "  - Refresh token rotation on each use\n"
+            "  - auth.service.ts handles all token logic\n"
+            "  ## Dependencies\n"
+            "  - Calls user-service for profile data\n"
+            "  - Redis for session blacklist\n"
+            "  ## Invariants\n"
+            "  - Tokens expire after 15 minutes\n"
+            "  - Never log token values"
+        ),
+    ))
+
+    tips.append(Tip(
+        "📌", "Pin key files with prompt starters",
+        "Start complex prompts by referencing key files explicitly. This "
+        "grounds Copilot in your actual code rather than generic patterns. "
+        "Reference the schema, the interface, or the test you want to match.",
+        priority=7, category="best-practice",
+        how_to=(
+            "Example prompt patterns:\n"
+            '  "Look at src/models/user.ts and add a\n'
+            '   resetPassword method following the same pattern\n'
+            '   as updateEmail"\n\n'
+            '  "Based on the schema in prisma/schema.prisma,\n'
+            '   generate a migration for adding a teams table"\n\n'
+            '  "Match the test style in tests/auth.test.ts\n'
+            '   and write tests for the new billing module"'
+        ),
+    ))
+
+    # ── Testing best practice ──
+    test_pct = habits.test_session_count / max(n, 1)
+    if test_pct < 0.1:
+        tips.append(Tip(
+            "🧪", "Use Copilot for testing",
+            f"Only {habits.test_session_count} of {n} sessions touched test files "
+            f"({test_pct:.0%}). Copilot excels at generating tests — it's one "
+            "of the highest-ROI use cases. Try: 'write tests for this module'.",
+            priority=8, category="best-practice",
+            how_to=(
+                "High-impact testing prompts:\n"
+                '  "Write unit tests for user.service.ts\n'
+                '   covering edge cases and error paths"\n\n'
+                '  "Generate integration tests for the /api/orders\n'
+                '   endpoint, mocking the database layer"\n\n'
+                '  "Look at the existing test in auth.test.ts and\n'
+                '   write matching tests for billing.service.ts"\n\n'
+                "Add a testing.instructions.md to ensure consistent\n"
+                "test style across all generated tests."
+            ),
+        ))
+
+    # ── Documentation best practice ──
+    doc_pct = habits.doc_session_count / max(n, 1)
+    if doc_pct < 0.1:
+        tips.append(Tip(
+            "📖", "Generate docs with Copilot",
+            f"Only {habits.doc_session_count} sessions touched documentation files. "
+            "Copilot can generate READMEs, API docs, architecture decision records, "
+            "and inline JSDoc/docstrings from your existing code.",
+            priority=5, category="best-practice",
+            how_to=(
+                "Documentation prompts:\n"
+                '  "Generate a README.md for this project based\n'
+                '   on the code structure and package.json"\n\n'
+                '  "Add JSDoc comments to all exported functions\n'
+                '   in src/utils/"\n\n'
+                '  "Write an ADR (Architecture Decision Record)\n'
+                '   for our choice to use event sourcing"\n\n'
+                '  "Generate a CONTRIBUTING.md with setup steps,\n'
+                '   coding standards, and PR guidelines"'
+            ),
+        ))
+
+    # ── CI/CD best practice ──
+    if habits.cicd_session_count < 2:
+        tips.append(Tip(
+            "🚀", "Automate with Copilot + CI/CD",
+            "You've barely used Copilot for CI/CD workflows. It can generate "
+            "GitHub Actions, Dockerfiles, and deployment configs — often faster "
+            "than writing YAML by hand.",
+            priority=5, category="best-practice",
+            how_to=(
+                "CI/CD prompts:\n"
+                '  "Create a GitHub Actions workflow that runs\n'
+                '   tests on PR and deploys to Azure on merge"\n\n'
+                '  "Write a multi-stage Dockerfile for this\n'
+                '   Node.js app with a production build"\n\n'
+                '  "Generate a Bicep template for an Azure\n'
+                '   Container App with a managed identity"'
+            ),
+        ))
+
+    # ── Session management ──
+    tips.append(Tip(
+        "🔄", "Master session management",
+        "Start fresh sessions for new tasks. Copilot's context is per-session "
+        "— a clean start avoids stale context from earlier conversations. "
+        "Use long sessions for iterative work, short ones for quick lookups.",
+        priority=6, category="best-practice",
+        how_to=(
+            "Session strategies:\n"
+            "  • One session per feature/bug — keeps context focused\n"
+            "  • Start with the goal: 'I need to build X that does Y'\n"
+            "  • Reference previous work: 'like we did in auth module'\n"
+            "  • If stuck, start fresh rather than fighting stale context\n"
+            "  • Use /compact to summarize and free up context mid-session"
+        ),
+    ))
+
+    # ── Code review with Copilot ──
+    tips.append(Tip(
+        "🔍", "Use Copilot for code review",
+        "Copilot can review your code changes before you push. It catches "
+        "bugs, security issues, and style inconsistencies — like a tireless "
+        "reviewer that's always available.",
+        priority=6, category="best-practice",
+        how_to=(
+            "Review prompts:\n"
+            '  "Review my staged changes for bugs and\n'
+            '   security issues"\n\n'
+            '  "Look at the diff and suggest improvements\n'
+            '   for readability and performance"\n\n'
+            '  "Check this PR for any breaking changes\n'
+            '   or missing edge cases"\n\n'
+            "Copilot CLI even has a built-in code-review\n"
+            "agent type for automated PR review."
+        ),
+    ))
+
+    # ── Refactoring ──
+    tips.append(Tip(
+        "♻️", "Refactor with confidence",
+        "Copilot is excellent at refactoring — renaming across files, "
+        "extracting functions, converting patterns, migrating APIs. "
+        "Describe the transformation and let it handle the tedious parts.",
+        priority=5, category="best-practice",
+        how_to=(
+            "Refactoring prompts:\n"
+            '  "Convert all callback-based functions in\n'
+            '   src/api/ to async/await"\n\n'
+            '  "Extract the validation logic from UserController\n'
+            '   into a separate validation service"\n\n'
+            '  "Replace all raw SQL queries with the ORM\n'
+            '   equivalents, matching existing patterns"\n\n'
+            "Copilot tracks all changed files and can run\n"
+            "tests after to verify nothing broke."
+        ),
+    ))
+
+    # ── Structured output ──
+    tips.append(Tip(
+        "📐", "Ask for structured output",
+        "When asking Copilot for analysis or planning, request structured "
+        "formats — tables, bullet lists, pros/cons. This makes outputs "
+        "more actionable and easier to share with your team.",
+        priority=4, category="best-practice",
+        how_to=(
+            "Structure prompts:\n"
+            '  "Compare Redis vs Memcached for our use case\n'
+            '   in a table with: feature, Redis, Memcached"\n\n'
+            '  "List the steps to migrate from Express to\n'
+            '   Fastify as a numbered checklist"\n\n'
+            '  "Summarize the architecture decisions in\n'
+            '   ADR format: context, decision, consequences"'
+        ),
+    ))
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # HABIT TIPS — based on actual usage patterns
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ── Consistency ──
     if habits.max_streak < 3:
         tips.append(Tip(
             "🔥", "Build a streak",
-            "Your longest streak is just {0} day(s). Try using Copilot 3 days in a "
-            "row — habits form fastest with consistency. Even a quick Q&A counts!".format(
-                habits.max_streak),
-            priority=9,
+            f"Your longest streak is {habits.max_streak} day(s). Try using Copilot "
+            "3 days in a row — habits form with consistency. Even a quick Q&A counts!",
+            priority=9, category="habit",
         ))
     elif habits.max_streak >= 5:
         tips.append(Tip(
             "🔥", "Streak champion!",
-            f"Your best streak is {habits.max_streak} consecutive days — great "
-            "discipline! Keep it going to reinforce muscle memory.",
-            priority=2,
+            f"Best streak: {habits.max_streak} consecutive days — great discipline!",
+            priority=2, category="habit",
         ))
 
-    # ── Session depth tips ──
+    # ── Session depth ──
     quick_pct = habits.session_size_dist.get("Quick (<5 turns)", 0) / max(n, 1)
     if quick_pct > 0.7:
         tips.append(Tip(
             "🏊", "Dive deeper",
-            f"{quick_pct:.0%} of your sessions are quick Q&As. Try a longer session: "
-            "describe a full feature and let Copilot scaffold it. "
-            "You'll be surprised how much it can do in one go.",
-            priority=8,
+            f"{quick_pct:.0%} of sessions are quick Q&As. Try a longer session: "
+            "describe a full feature, let Copilot scaffold, iterate, and refine.",
+            priority=8, category="habit",
         ))
     marathon_pct = habits.session_size_dist.get("Marathon (30+)", 0) / max(n, 1)
     if marathon_pct > 0.15:
         tips.append(Tip(
             "✂️", "Break up marathons",
-            f"{marathon_pct:.0%} of your sessions are 30+ turns. Long sessions can "
-            "lose context. Try splitting into focused chunks — one session per "
-            "concern (tests, then implementation, then docs).",
-            priority=6,
+            f"{marathon_pct:.0%} of sessions are 30+ turns. Long sessions lose "
+            "context. Split into focused chunks — tests, impl, then docs.",
+            priority=6, category="habit",
         ))
 
-    # ── Breadth tips ──
+    # ── Breadth ──
     repo_count = len(habits.top_repos)
     if repo_count <= 2:
         tips.append(Tip(
             "🌍", "Explore new territory",
-            "You've only used Copilot in {0} repo(s). Try it in a different project — "
-            "even personal or open-source ones. Each new context teaches you new "
-            "prompting patterns.".format(repo_count),
-            priority=7,
+            f"Only {repo_count} repo(s) so far. Try Copilot in different projects "
+            "— each context teaches new prompting patterns.",
+            priority=7, category="habit",
         ))
     ext_set = {e for e, _ in habits.top_extensions[:5]}
     if len(ext_set) <= 2:
         tips.append(Tip(
-            "🧪", "Try new languages",
-            "You mostly work with {0}. Copilot supports 20+ languages — try it for "
-            "shell scripts, YAML configs, SQL, or even Markdown docs.".format(
-                ", ".join(ext_set)),
-            priority=5,
+            "🧬", "Try new languages",
+            f"You mostly work with {', '.join(ext_set)}. Try shell scripts, YAML, "
+            "SQL, or Markdown — Copilot handles them all.",
+            priority=5, category="habit",
         ))
 
-    # ── Timing tips ──
+    # ── Timing ──
     total_tod = habits.morning + habits.afternoon + habits.evening + habits.night
     if total_tod > 0:
         if habits.night / total_tod > 0.3:
             tips.append(Tip(
                 "🌙", "Night owl detected",
-                f"{habits.night} of {total_tod} sessions start after 10 PM. "
-                "Late-night coding can lead to less precise prompts. "
-                "Consider batching complex tasks for when you're fresh.",
-                priority=4,
+                f"{habits.night}/{total_tod} sessions after 10 PM. Complex tasks "
+                "may benefit from fresher hours.",
+                priority=4, category="habit",
             ))
         if habits.morning / total_tod > 0.5:
             tips.append(Tip(
                 "☀️", "Morning power user",
-                "Most of your sessions happen in the morning — great for focus! "
-                "Try using Copilot for end-of-day reviews too: summarize changes, "
-                "generate commit messages, or draft PRs.",
-                priority=2,
+                "Most sessions in the morning — great focus time! Try end-of-day "
+                "reviews too: summarize changes, draft PRs.",
+                priority=2, category="habit",
             ))
 
-    # ── Prompt quality tips ──
+    # ── Prompt quality ──
     if habits.avg_msg_length < 80:
         tips.append(Tip(
             "📝", "Write richer prompts",
-            f"Your average message is {habits.avg_msg_length} chars — pretty short. "
-            "Longer, more descriptive prompts get dramatically better results. "
-            "Include: what you want, the context, constraints, and preferred style.",
-            priority=8,
+            f"Avg message: {habits.avg_msg_length} chars — short. More descriptive "
+            "prompts get dramatically better results. Include what, why, and constraints.",
+            priority=8, category="habit",
+            how_to=(
+                "Prompt formula:\n"
+                "  WHAT: 'Add a password reset endpoint'\n"
+                "  CONTEXT: 'in the auth module, using our JWT pattern'\n"
+                "  CONSTRAINTS: 'with rate limiting, email notification'\n"
+                "  STYLE: 'match the style of the login endpoint'\n\n"
+                "This 4-part structure consistently produces better results."
+            ),
         ))
     elif habits.avg_msg_length > 500:
         tips.append(Tip(
             "✨", "Master of context",
-            f"Your avg message is {habits.avg_msg_length} chars — very detailed! "
-            "You might benefit from using reference files or pasting code snippets "
-            "instead of describing everything from scratch.",
-            priority=3,
+            f"Avg message: {habits.avg_msg_length} chars — very detailed! "
+            "Consider using .context.md files or copilot-instructions.md to "
+            "avoid repeating context in every prompt.",
+            priority=3, category="habit",
         ))
 
-    # ── Phase-specific tips ──
+    # ═══════════════════════════════════════════════════════════════════════
+    # PHASE TIPS — progression advice
+    # ═══════════════════════════════════════════════════════════════════════
+
     if current_phase == Phase.EXPLORER:
         tips.append(Tip(
             "🚀", "Level up to Builder",
-            "You're in the Explorer phase. To advance: try multi-file edits, "
-            "ask Copilot to scaffold a project, or use it to write tests for "
-            "existing code. Move from questions to building.",
-            priority=10,
+            "Explorer phase. To advance: try multi-file edits, scaffold a "
+            "project, or write tests for existing code.",
+            priority=10, category="phase",
         ))
     elif current_phase == Phase.BUILDER:
         tips.append(Tip(
             "🎯", "Aim for Orchestrator",
-            "You're a Builder — nice! To reach Orchestrator: try delegating entire "
-            "features, use Copilot for CI/CD configs, and work across multiple "
-            "repos in the same week.",
-            priority=10,
+            "Builder phase! To reach Orchestrator: delegate entire features, "
+            "try CI/CD configs, work across multiple repos per week.",
+            priority=10, category="phase",
         ))
     elif current_phase == Phase.ORCHESTRATOR:
         tips.append(Tip(
             "🏛️", "Path to Architect",
-            "You're orchestrating well! To reach Architect: use Copilot for "
-            "system design, infrastructure-as-code, and cross-project refactors. "
-            "Think at the system level, not just the file level.",
-            priority=10,
+            "Orchestrator! For Architect: use Copilot for system design, "
+            "IaC, cross-project refactors. Think at the system level.",
+            priority=10, category="phase",
         ))
     elif current_phase == Phase.ARCHITECT:
         tips.append(Tip(
             "🌟", "Share your mastery",
-            "You've reached Architect level! Consider: writing about your journey, "
-            "mentoring colleagues, or building custom skills/plugins. "
-            "You can amplify your impact by helping others level up too.",
-            priority=10,
+            "Architect level! Amplify impact: write about your journey, "
+            "mentor colleagues, build custom skills & plugins.",
+            priority=10, category="phase",
         ))
 
-    # ── Delivery tips ──
+    # ── Delivery ──
     ref_sessions = sum(1 for s in sessions if s.has_refs)
     if ref_sessions == 0:
         tips.append(Tip(
             "🔗", "Connect to delivery",
-            "None of your sessions link to PRs or commits yet. When you use "
-            "Copilot to build something, push it! This tracks real impact "
-            "and makes your ROI story tangible.",
-            priority=7,
+            "No sessions link to PRs/commits yet. Push your Copilot-built "
+            "work to track real impact and make your ROI tangible.",
+            priority=7, category="habit",
         ))
 
     # ── Weekend warrior ──
@@ -740,10 +1110,9 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     if weekend > n * 0.2:
         tips.append(Tip(
             "🏖️", "Weekend warrior",
-            f"You have {weekend} weekend sessions ({weekend/max(n,1):.0%}). "
-            "Great enthusiasm! If these are personal projects, try bolder "
-            "experiments — Copilot is perfect for weekend hacking.",
-            priority=3,
+            f"{weekend} weekend sessions ({weekend/max(n,1):.0%}). "
+            "Use weekends for bolder experiments — Copilot is perfect for hacking.",
+            priority=3, category="habit",
         ))
 
     tips.sort(key=lambda t: t.priority, reverse=True)
