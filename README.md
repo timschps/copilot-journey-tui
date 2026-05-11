@@ -6,6 +6,10 @@ Built with [Textual](https://github.com/Textualize/textual) and the Catppuccin M
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
+<p align="center">
+  <img src="screenshots/dashboard.svg" alt="Dashboard tab" width="800">
+</p>
+
 ## What It Does
 
 Reads your **local** Copilot CLI session history (100% offline — nothing leaves your machine) and turns it into an interactive 5-tab dashboard:
@@ -19,10 +23,14 @@ Two-column overview with:
 ### 📅 Timeline
 Interactive milestone table tracking key moments in your journey — first multi-file build, first marathon session, phase transitions, and more. Color-coded by phase.
 
+<img src="screenshots/timeline.svg" alt="Timeline tab" width="800">
+
 ### 📖 Walkthrough
 Step through each phase of your evolution with `←` / `→` keys:
 - **Left panel**: narrative description of what you were doing in that period
 - **Right panel**: 6-dimension radar breakdown (Session Depth, File Breadth, Delivery Signals, Tool Diversity, Consistency, Prompt Variety) with a phase progression chart
+
+<img src="screenshots/walkthrough.svg" alt="Walkthrough tab" width="800">
 
 ### 🔎 Habits
 Deep dive into your usage patterns:
@@ -33,6 +41,8 @@ Deep dive into your usage patterns:
 - **Languages** — file extension breakdown across all sessions
 - **Prompt quality** — average message length and median turns per session
 - **Recent topics** — latest checkpoint titles showing what you've been working on
+
+<img src="screenshots/habits.svg" alt="Habits tab" width="800">
 
 ### 💡 Tips
 Personalized, actionable recommendations grouped by category:
@@ -45,6 +55,8 @@ Personalized, actionable recommendations grouped by category:
 - **🎯 Phase Progression** — what to focus on to reach the next level
 
 Tips that you've already adopted show as ✅ confirmations.
+
+<img src="screenshots/tips.svg" alt="Tips tab" width="800">
 
 ## Install
 
