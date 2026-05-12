@@ -719,6 +719,8 @@ class JourneyApp(App):
                     pass
 
             code_hint = " — opened in VS Code" if opened else ""
+            if not has_code and created:
+                code_hint = "\n💡 Install 'code' CLI to auto-open in VS Code"
             # Check if any created file is a companion prompt
             has_prompt = any(".copilot-enhance" in f for f in created)
             enhance_hint = "\n🤖 Use companion prompt file with Copilot Chat to enhance!" if has_prompt else ""

@@ -19,6 +19,14 @@ copilot-journey-tui
 
 > Requires Python 3.10+ and an existing [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) session history. 100% offline — nothing leaves your machine.
 
+### Optional: VS Code CLI
+
+Many tips include **clickable action buttons** that auto-create config files and open them in VS Code. To enable this, install the `code` CLI:
+
+> **VS Code** → `Ctrl+Shift+P` → *"Shell Command: Install 'code' command in PATH"*
+
+The TUI will detect whether `code` is available and show a tip if it's missing.
+
 <details>
 <summary>Alternative install methods</summary>
 
@@ -42,10 +50,11 @@ copilot-journey-tui --db /path/to/session-store.db
 Reads your **local** Copilot CLI session history (100% offline — nothing leaves your machine) and turns it into an interactive 5-tab dashboard:
 
 ### 📊 Dashboard
-Two-column overview with:
+Two-column overview with contextual legends:
 - **Phase Evolution** — your progress through Explorer → Builder → Orchestrator → Architect, shown as a scored bar chart across time windows
 - **ROI Estimate** — conservative, moderate, and aggressive time-saved calculations based on session depth, file edits, and tool usage
 - Weekly activity sparkline, total sessions, active days, repos, and files touched
+- Inline legend explains phase scoring scale and ROI calculation methodology
 
 ### 📅 Timeline
 Interactive milestone table tracking key moments in your journey — first multi-file build, first marathon session, phase transitions, and more. Color-coded by phase.
@@ -60,7 +69,7 @@ Step through each phase of your evolution with `←` / `→` keys:
 <img src="screenshots/walkthrough.svg" alt="Walkthrough tab" width="800">
 
 ### 🔎 Habits
-Deep dive into your usage patterns:
+Deep dive into your usage patterns with contextual legends explaining each metric:
 - **Time patterns** — peak hour, day-of-week distribution, morning/afternoon/evening/night breakdown
 - **Session depth** — distribution of quick Q&As vs. deep builds vs. marathon sessions
 - **Streaks** — longest and current consecutive-day streaks
@@ -68,6 +77,8 @@ Deep dive into your usage patterns:
 - **Languages** — file extension breakdown across all sessions
 - **Prompt quality** — average message length and median turns per session
 - **Recent topics** — latest checkpoint titles showing what you've been working on
+
+Each stat card includes an inline legend explaining what the numbers mean and how to interpret them.
 
 <img src="screenshots/habits.svg" alt="Habits tab" width="800">
 
@@ -80,8 +91,30 @@ Personalized, actionable recommendations grouped by category:
   - Each tip includes a **How-to** section with file templates, prompt examples, and candidate repos
 - **📊 Usage Habits** — streak building, session depth, prompt quality, delivery signals
 - **🎯 Phase Progression** — what to focus on to reach the next level
+- **💻 Environment** — checks for VS Code CLI and other tooling
 
 Tips that you've already adopted show as ✅ confirmations.
+
+#### 🤖 Smart Generation (AI-powered)
+
+Tip buttons marked with 🤖 use **session-log intelligence** — when clicked, they:
+
+1. **Mine your session history** for the target repo (file structure, summaries, checkpoints, branches, user prompts)
+2. **Generate a pre-populated file** with real project insights (not a generic template)
+3. **Create a companion `.copilot-enhance-*.md`** containing all the raw session data as context
+
+The companion file lets you take it further with **Copilot Chat**:
+- Open both files in VS Code
+- Select the generated content → `Ctrl+I` → *"Enhance this using the session data below"*
+- Get truly project-specific, AI-refined output
+
+This works for `copilot-instructions.md`, `.context.md`, and `testing.instructions.md`.
+
+#### Per-repo action buttons
+
+Each tip shows clickable buttons **per repository** — so you choose exactly which repos to set up. Clicking a button:
+1. Creates the file (skips if it already exists)
+2. Opens VS Code at the repo root with the new file ready for editing
 
 <img src="screenshots/tips.svg" alt="Tips tab" width="800">
 
@@ -105,6 +138,8 @@ Tips that you've already adopted show as ✅ confirmations.
 6. **Profiles** each repo for best-practice adoption (instruction files, tests, docs, CI/CD)
 7. **Generates** personalized tips pointing to specific repos where you can take action
 8. **Estimates** ROI with conservative/moderate/aggressive ranges
+9. **Smart generation** — action buttons mine session logs at click time to create project-aware config files
+10. **Copilot Chat bridge** — companion prompt files contain session data for AI-powered refinement
 
 ## Phase Classification
 

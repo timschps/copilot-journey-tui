@@ -1901,4 +1901,27 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
         ))
 
     tips.sort(key=lambda t: t.priority, reverse=True)
+
+    # ── VS Code CLI check — add at the end so it's near top after sort ──
+    import shutil
+    if not shutil.which("code"):
+        tips.insert(0, Tip(
+            "💻", "Install VS Code CLI ('code' command)",
+            "The `code` command is not on your PATH. Many tips can auto-create "
+            "files and open them in VS Code for immediate editing — but only if "
+            "the `code` CLI is installed.",
+            priority=11, category="best-practice",
+            how_to=(
+                "To install the 'code' command:\n\n"
+                "  VS Code → Cmd/Ctrl+Shift+P →\n"
+                '  "Shell Command: Install \'code\' in PATH"\n\n'
+                "Or on Windows, ensure VS Code is added\n"
+                "to PATH during installation.\n\n"
+                "Once installed, tip buttons will:\n"
+                "  1. Create the config file\n"
+                "  2. Open VS Code at the repo\n"
+                "  3. Jump straight to the new file"
+            ),
+        ))
+
     return tips
