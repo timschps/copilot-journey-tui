@@ -87,7 +87,7 @@ Personalized, actionable recommendations grouped by category:
 
 - **🛠️ Best Practices** — based on per-repo adoption scans:
   - Detects which repos have `copilot-instructions.md`, custom `.instructions.md` files, `SKILL.md`, `mcp.json`, `.context.md`, tests, docs, and CI/CD configs
-  - Tips name **specific repos** where you can take action (e.g., *"Add copilot-instructions.md to hotelsite-demo, site-anne"*)
+  - Tips name **specific repos** where you can take action (e.g., *"Add copilot-instructions.md to web-app, api-service"*)
   - Each tip includes a **How-to** section with file templates, prompt examples, and candidate repos
 - **📊 Usage Habits** — streak building, session depth, prompt quality, delivery signals
 - **🎯 Phase Progression** — what to focus on to reach the next level
@@ -95,18 +95,42 @@ Personalized, actionable recommendations grouped by category:
 
 Tips that you've already adopted show as ✅ confirmations.
 
+#### 📊 Impact Indicators
+
+Every per-repo action button shows an **impact badge** to help you prioritize:
+
+| Badge | Meaning |
+|-------|---------|
+| 🔴 High | High-activity repo with missing or low-quality config — biggest bang for your buck |
+| 🟡 Medium | Moderate activity or some config gaps — worthwhile improvement |
+| 🟢 Low | Less active repo or minor gaps — improve when you have time |
+
+Impact is calculated from: session frequency, file count (how much code Copilot needs to understand), and current quality gaps.
+
+#### 🔍 Quality Checking
+
+For repos that **already have** config files (`copilot-instructions.md`, `.context.md`), the tool assesses their quality:
+
+- **Content depth** — line count, non-empty lines
+- **Section coverage** — checks for key sections (Language/Framework, Coding Standards, Error Handling, Testing, Architecture, Dependencies)
+- **Placeholder detection** — flags unfilled template text
+- **Structure** — headings, lists, organization
+
+Low-quality files get a score (e.g., `45%`) and a **📝 Improve** button that regenerates the file from session data while preserving the existing file as a reference.
+
 #### 🤖 Smart Generation (AI-powered)
 
 Tip buttons marked with 🤖 use **session-log intelligence** — when clicked, they:
 
 1. **Mine your session history** for the target repo (file structure, summaries, checkpoints, branches, user prompts)
 2. **Generate a pre-populated file** with real project insights (not a generic template)
-3. **Create a companion `.copilot-enhance-*.md`** containing all the raw session data as context
+3. **Create a companion `.copilot-enhance-*.md`** with a ready-to-paste Copilot Chat prompt
 
-The companion file lets you take it further with **Copilot Chat**:
-- Open both files in VS Code
-- Select the generated content → `Ctrl+I` → *"Enhance this using the session data below"*
-- Get truly project-specific, AI-refined output
+The companion file includes a **copy-paste prompt** for Copilot Chat:
+```
+@workspace Using the session data in .copilot-enhance-context.md, rewrite the
+context file to be comprehensive and project-specific. Remove all placeholder text.
+```
 
 This works for `copilot-instructions.md`, `.context.md`, and `testing.instructions.md`.
 

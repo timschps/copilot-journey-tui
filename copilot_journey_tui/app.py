@@ -392,15 +392,27 @@ class TipsPane(Static):
         if tip.repo_actions:
             lines.append(f"\n  [dim]{'─' * 34}[/dim]")
             is_smart = any(a.action_type == "smart_create" for a in tip.repo_actions)
-            header = "🤖 Generate from session data:" if is_smart else "⚡ Set up per repo:"
+            is_improve = any(a.quality_score is not None for a in tip.repo_actions)
+            if is_improve:
+                header = "📝 Improve existing files:"
+            elif is_smart:
+                header = "🤖 Generate from session data:"
+            else:
+                header = "⚡ Set up per repo:"
             lines.append(f"  [#89dceb][b]{header}[/b][/#89dceb]")
             for act in tip.repo_actions:
                 emoji = "🤖" if act.action_type == "smart_create" else "⚡"
-                hint = "→ AI-generated + opens VS Code" if act.action_type == "smart_create" else "→ opens in VS Code"
+                if act.quality_score is not None:
+                    hint = f"quality: {act.quality_score}%"
+                elif act.action_type == "smart_create":
+                    hint = "AI-generated + opens VS Code"
+                else:
+                    hint = "opens in VS Code"
+                impact_badge = f" {act.impact}" if act.impact else ""
                 lines.append(
                     f"  [@click=app.execute_tip_action('{act.action_id}')]"
-                    f"[bold #a6e3a1 on #45475a] {emoji} {act.repo_name} [/bold #a6e3a1 on #45475a][/]"
-                    f"  [dim]{hint}[/dim]"
+                    f"[bold #a6e3a1 on #45475a] {act.label} {act.repo_name} [/bold #a6e3a1 on #45475a][/]"
+                    f"  [dim]{hint}[/dim]{impact_badge}"
                 )
         # Single bulk action (e.g. MCP config — user-global)
         elif tip.action:

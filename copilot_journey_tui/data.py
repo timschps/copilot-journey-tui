@@ -44,18 +44,24 @@ TEMPLATE_COPILOT_INSTRUCTIONS = """\
 - Follow existing code style and patterns
 - Use descriptive variable and function names
 - Prefer composition over inheritance
+- Keep functions focused — one responsibility per function
+- Use consistent naming: camelCase for variables, PascalCase for types
 
 ## Error Handling
-- Always handle errors explicitly
+- Always handle errors explicitly — never silently swallow them
 - Use try/catch for async operations
-- Log errors with context
+- Log errors with context (what operation failed, relevant IDs)
+- Return meaningful error messages to callers
 
 ## Testing
 - Write tests for new functionality
 - Follow AAA pattern (Arrange, Act, Assert)
+- Test both success and error paths
+- Mock external services and I/O
 
 ## Project-Specific Notes
-- (Add your project conventions here)
+- Review existing patterns before generating new code
+- Prefer existing abstractions over introducing new ones
 """
 
 TEMPLATE_CUSTOM_INSTRUCTIONS = """\
@@ -75,20 +81,27 @@ applyTo: "{glob_pattern}"
 """
 
 TEMPLATE_CONTEXT_MD = """\
-# {dir_name} Module
+# {dir_name}
 
 ## Purpose
-(Describe what this module/directory does)
+Describe what this module or directory does and why it exists.
 
 ## Architecture
-- (Key components and their responsibilities)
-- (Data flow between components)
+- Key components and their responsibilities
+- Data flow between components
+- Important design decisions and trade-offs
+
+## Tech Stack
+- Languages and frameworks used in this module
+- Key dependencies and their versions
 
 ## Dependencies
-- (External services or modules this depends on)
+- External services or modules this depends on
+- APIs consumed or provided
 
 ## Key Invariants
-- (Rules that must always hold true)
+- Rules that must always hold true
+- Constraints on data formats or behavior
 """
 
 TEMPLATE_MCP_JSON = """\
@@ -485,12 +498,19 @@ def _build_copilot_refinement_prompt(repo_short: str, kind: str, data: dict) -> 
 
     lines = [
         f"# 🤖 Enhance {repo_short} {kind} with Copilot\n",
-        "## How to use this file",
+        "## Quick Start — copy-paste this into Copilot Chat\n",
+        "```",
+        f"@workspace Using the session data in .copilot-enhance-{kind}.md, "
+        f"rewrite the {kind} file to be comprehensive and project-specific. "
+        f"Include all sections with concrete details from my actual codebase. "
+        f"Remove all placeholder text.",
+        "```\n",
+        "## Alternative: step-by-step",
         "1. Open this file alongside the generated file in VS Code",
         "2. Select all the content in the generated file",
-        "3. Use Copilot Chat (Ctrl+I or Cmd+I) and say:",
-        f'   "Enhance this {kind} file using the session data below as context"\n',
-        "You can delete this file after you're done — it's just a helper.\n",
+        "3. Press Ctrl+I (Cmd+I on Mac) to open Copilot inline chat",
+        f'4. Say: "Enhance this using the session data in .copilot-enhance-{kind}.md"\n',
+        "Delete this file after you're done — it's just a helper.\n",
         "---\n",
         "## Session Intelligence Data\n",
         "The following data was extracted from your Copilot CLI session history",
@@ -589,6 +609,222 @@ def _build_copilot_refinement_prompt(repo_short: str, kind: str, data: dict) -> 
     return "\n".join(lines) + "\n"
 
 
+# ── Quality assessment — score existing config files ──────────────────────────
+
+def _assess_file_quality(file_path: str, file_type: str) -> tuple:
+    """Read a config file on disk and return (score 0-100, list of issues).
+    file_type: 'instructions' | 'context' | 'custom_instructions'"""
+    if not os.path.isfile(file_path):
+        return (None, [])
+
+    try:
+        content = open(file_path, "r", encoding="utf-8", errors="replace").read()
+    except Exception:
+        return (None, [])
+
+    lines = content.strip().splitlines()
+    line_count = len(lines)
+    issues = []
+    score = 0
+
+    if line_count == 0:
+        return (5, ["File is empty"])
+
+    # ── Common checks ──
+    has_headings = any(l.strip().startswith("#") for l in lines)
+    heading_count = sum(1 for l in lines if l.strip().startswith("##"))
+    non_empty = sum(1 for l in lines if l.strip())
+    has_placeholder = any("(Add " in l or "(Fill in" in l or "(Describe" in l
+                          or "TODO" in l.upper() or "(your " in l.lower()
+                          for l in lines)
+    content_lower = content.lower()
+
+    if file_type == "instructions":
+        # Score copilot-instructions.md
+        score = 20  # base: it exists
+
+        # Length bonus (up to 30 points)
+        if non_empty >= 30:
+            score += 30
+        elif non_empty >= 15:
+            score += 20
+        elif non_empty >= 8:
+            score += 10
+
+        # Section coverage (up to 30 points)
+        key_sections = {
+            "language": any(k in content_lower for k in ("language", "framework", "stack")),
+            "standards": any(k in content_lower for k in ("standard", "convention", "style", "naming")),
+            "error": any(k in content_lower for k in ("error", "exception", "handling")),
+            "testing": any(k in content_lower for k in ("test", "spec", "coverage")),
+            "project": any(k in content_lower for k in ("project", "context", "architecture", "specific")),
+        }
+        covered = sum(1 for v in key_sections.values() if v)
+        score += covered * 6  # 5 sections × 6 = 30 max
+
+        # Structure bonus (up to 20 points)
+        if has_headings:
+            score += 5
+        if heading_count >= 3:
+            score += 10
+        elif heading_count >= 2:
+            score += 5
+        if any(l.strip().startswith("- ") for l in lines):
+            score += 5
+
+        # Penalties
+        if has_placeholder:
+            score -= 15
+            issues.append("Contains placeholder text — fill in project-specific details")
+        for section, covered in key_sections.items():
+            if not covered:
+                label = {"language": "Language/Framework", "standards": "Coding standards",
+                         "error": "Error handling", "testing": "Testing approach",
+                         "project": "Project-specific context"}.get(section, section)
+                issues.append(f"Missing section: {label}")
+        if non_empty < 8:
+            issues.append("Very short — consider adding more detail")
+
+    elif file_type == "context":
+        # Score .context.md
+        score = 20
+
+        if non_empty >= 20:
+            score += 25
+        elif non_empty >= 10:
+            score += 15
+        elif non_empty >= 5:
+            score += 8
+
+        key_sections = {
+            "purpose": any(k in content_lower for k in ("purpose", "what", "overview", "about")),
+            "architecture": any(k in content_lower for k in ("architecture", "structure", "component", "module")),
+            "dependencies": any(k in content_lower for k in ("depend", "import", "require", "service")),
+            "tech": any(k in content_lower for k in ("tech", "stack", "language", "framework")),
+            "invariants": any(k in content_lower for k in ("invariant", "rule", "constraint", "must")),
+        }
+        covered = sum(1 for v in key_sections.values() if v)
+        score += covered * 7  # 5 × 7 = 35 max
+
+        if has_headings:
+            score += 5
+        if heading_count >= 3:
+            score += 10
+        elif heading_count >= 2:
+            score += 5
+
+        if has_placeholder:
+            score -= 15
+            issues.append("Contains placeholder text — fill in real project details")
+        for section, covered in key_sections.items():
+            if not covered:
+                label = {"purpose": "Purpose/Overview", "architecture": "Architecture/Structure",
+                         "dependencies": "Dependencies", "tech": "Tech stack",
+                         "invariants": "Key invariants/rules"}.get(section, section)
+                issues.append(f"Missing section: {label}")
+        if non_empty < 5:
+            issues.append("Very short — describe your project's architecture")
+
+    elif file_type == "custom_instructions":
+        score = 25
+        has_frontmatter = content.strip().startswith("---")
+        has_apply_to = "applyto" in content_lower
+
+        if has_frontmatter and has_apply_to:
+            score += 20
+        elif has_frontmatter:
+            score += 10
+        else:
+            issues.append("Missing YAML frontmatter with applyTo glob pattern")
+
+        if non_empty >= 15:
+            score += 25
+        elif non_empty >= 8:
+            score += 15
+        elif non_empty >= 4:
+            score += 8
+
+        if heading_count >= 2:
+            score += 15
+        elif heading_count >= 1:
+            score += 8
+
+        if any(k in content_lower for k in ("pattern", "rule", "guideline", "convention")):
+            score += 15
+
+        if has_placeholder:
+            score -= 10
+            issues.append("Contains placeholder text — add real rules")
+        if not has_apply_to:
+            issues.append("Add 'applyTo' in frontmatter to auto-apply to matching files")
+        if non_empty < 5:
+            issues.append("Very short — add specific guidelines")
+
+    return (min(max(score, 0), 100), issues)
+
+
+def assess_repo_quality(rp) -> None:
+    """Assess quality of existing Copilot config files for a repo profile.
+    Mutates the RepoProfile in place."""
+    if not rp.local_path or not os.path.isdir(rp.local_path):
+        return
+
+    # Check copilot-instructions.md
+    instr_path = os.path.join(rp.local_path, ".github", "copilot-instructions.md")
+    if os.path.isfile(instr_path):
+        rp.has_copilot_instructions = True
+        rp.instructions_quality, rp.instructions_issues = _assess_file_quality(
+            instr_path, "instructions"
+        )
+
+    # Check .context.md (at repo root)
+    ctx_path = os.path.join(rp.local_path, ".context.md")
+    if os.path.isfile(ctx_path):
+        rp.has_context_md = True
+        rp.context_quality, rp.context_issues = _assess_file_quality(
+            ctx_path, "context"
+        )
+
+    # Check for custom instructions
+    instr_dir = os.path.join(rp.local_path, ".github", "instructions")
+    if os.path.isdir(instr_dir):
+        for f in os.listdir(instr_dir):
+            if f.endswith(".instructions.md"):
+                rp.has_custom_instructions = True
+                break
+
+    # Check for MCP config
+    for mcp_candidate in [
+        os.path.join(rp.local_path, ".copilot", "mcp.json"),
+        os.path.join(rp.local_path, "mcp.json"),
+    ]:
+        if os.path.isfile(mcp_candidate):
+            rp.has_mcp_config = True
+            break
+
+    # Check for SKILL.md
+    skills_dir = os.path.join(rp.local_path, "skills")
+    if os.path.isdir(skills_dir):
+        for root, dirs, files in os.walk(skills_dir):
+            if any(f.upper() == "SKILL.MD" for f in files):
+                rp.has_skills = True
+                break
+
+    # Check for .context.md in subdirectories too
+    if not rp.has_context_md:
+        for item in os.listdir(rp.local_path):
+            sub = os.path.join(rp.local_path, item)
+            if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, ".context.md")):
+                rp.has_context_md = True
+                ctx_q, ctx_i = _assess_file_quality(
+                    os.path.join(sub, ".context.md"), "context"
+                )
+                if rp.context_quality is None or (ctx_q is not None and ctx_q < rp.context_quality):
+                    rp.context_quality = ctx_q
+                    rp.context_issues = ctx_i
+                break
+
+
 @dataclass
 class Session:
     id: str
@@ -643,7 +879,7 @@ class ROIEstimate:
 @dataclass
 class RepoProfile:
     """Per-repo adoption profile built from actual session data."""
-    name: str                          # e.g. "timschps/hotelsite-demo"
+    name: str                          # e.g. "acme/web-app"
     session_count: int = 0
     file_count: int = 0
     top_extensions: list = field(default_factory=list)  # [(ext, count), ...]
@@ -657,6 +893,41 @@ class RepoProfile:
     has_cicd: bool = False
     primary_language: str = ""         # dominant extension
     local_path: str = ""               # local filesystem path (from session cwd)
+    # Quality scores (0-100) for existing files — None means file doesn't exist
+    instructions_quality: Optional[int] = None
+    context_quality: Optional[int] = None
+    instructions_issues: list = field(default_factory=list)  # list of improvement hints
+    context_issues: list = field(default_factory=list)
+
+    @property
+    def impact_score(self) -> int:
+        """How much impact improving Copilot config would have (0-100).
+        Based on session activity, file count, and quality gaps."""
+        score = 0
+        # Activity: more sessions = higher payoff
+        score += min(self.session_count * 8, 40)
+        # Breadth: more files = more context needed
+        score += min(self.file_count * 2, 30)
+        # Quality gap: existing but poor files = quick win
+        if self.instructions_quality is not None and self.instructions_quality < 60:
+            score += 15
+        if self.context_quality is not None and self.context_quality < 60:
+            score += 15
+        # Missing key files on active repos
+        if not self.has_copilot_instructions and self.session_count >= 2:
+            score += 20
+        if not self.has_context_md and self.file_count >= 5:
+            score += 10
+        return min(score, 100)
+
+    @property
+    def impact_label(self) -> str:
+        s = self.impact_score
+        if s >= 70:
+            return "🔴 High"
+        elif s >= 40:
+            return "🟡 Medium"
+        return "🟢 Low"
 
 
 @dataclass
@@ -701,7 +972,7 @@ class TipAction:
     """An executable action attached to a tip."""
     action_id: str                     # unique id, e.g. "copilot-instructions-acme-api"
     label: str                         # button text, e.g. "⚡ Set up"
-    action_type: str                   # "create_files" | "smart_create"
+    action_type: str                   # "create_files" | "smart_create" | "improve"
     # For create_files: list of (full_path, content) tuples
     files: list = field(default_factory=list)
     # For smart_create: generates content from session logs at click time
@@ -710,6 +981,10 @@ class TipAction:
     repo_local_path: str = ""          # local path on disk
     # Display context
     repo_name: str = ""                # short repo name for display
+    # Impact indicator
+    impact: str = ""                   # "🔴 High" | "🟡 Medium" | "🟢 Low"
+    quality_score: Optional[int] = None  # current quality 0-100 (for improve actions)
+    quality_issues: list = field(default_factory=list)  # specific issues to fix
 
 
 @dataclass
@@ -999,6 +1274,9 @@ def _detect_best_practice_signals(conn, file_paths: list[str]) -> dict:
             rp.top_extensions = ext_ctr.most_common(5)
             if rp.top_extensions:
                 rp.primary_language = rp.top_extensions[0][0]
+
+            # Assess quality of existing config files on disk
+            assess_repo_quality(rp)
 
             signals["repo_profiles"].append(rp)
     except Exception:
@@ -1352,6 +1630,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                     action_type="create_files",
                     files=[(path, content)],
                     repo_name=_short(rp.name),
+                    impact=rp.impact_label,
                 ))
         return actions
 
@@ -1370,6 +1649,33 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 repo_full_name=rp.name,
                 repo_local_path=rp.local_path,
                 repo_name=_short(rp.name),
+                impact=rp.impact_label,
+            ))
+        return actions
+
+    def _improve_repo_actions(prefix: str, repos: list, file_type: str) -> list:
+        """Build per-repo 'improve quality' actions for repos with existing but low-quality files."""
+        actions = []
+        for rp in repos[:6]:
+            if not rp.local_path:
+                continue
+            qual = rp.instructions_quality if file_type == "instructions" else rp.context_quality
+            issues = rp.instructions_issues if file_type == "instructions" else rp.context_issues
+            if qual is None:
+                continue
+            label = f"📝 Improve ({qual}%)" if qual < 80 else f"✨ Fine-tune ({qual}%)"
+            kind = "instructions_md" if file_type == "instructions" else "context_md"
+            actions.append(TipAction(
+                action_id=_make_action_id(f"{prefix}-improve-{_short(rp.name)}"),
+                label=label,
+                action_type="smart_create" if db_path else "create_files",
+                smart_kind=kind,
+                repo_full_name=rp.name,
+                repo_local_path=rp.local_path,
+                repo_name=_short(rp.name),
+                impact=rp.impact_label,
+                quality_score=qual,
+                quality_issues=list(issues),
             ))
         return actions
 
@@ -1411,13 +1717,41 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             repo_actions=per_repo,
         ))
     elif repos_with_instructions:
-        names = ", ".join(_short(rp.name) for rp in repos_with_instructions[:3])
-        tips.append(Tip(
-            "✅", "Instructions file in place",
-            f"Great — {names} already {'has' if len(repos_with_instructions) == 1 else 'have'} "
-            "copilot-instructions.md! Keep it updated as your project evolves.",
-            priority=1, category="best-practice",
-        ))
+        # Check quality of existing instructions
+        low_quality = [rp for rp in repos_with_instructions
+                       if rp.instructions_quality is not None and rp.instructions_quality < 80]
+        if low_quality:
+            names = ", ".join(
+                f"{_short(rp.name)} ({rp.instructions_quality}%)"
+                for rp in low_quality[:4]
+            )
+            improve_actions = _improve_repo_actions("ci", low_quality, "instructions")
+            # Collect all issues for the how_to
+            all_issues = set()
+            for rp in low_quality[:4]:
+                all_issues.update(rp.instructions_issues)
+            issue_text = "\n".join(f"  • {iss}" for iss in sorted(all_issues)[:6])
+            tips.append(Tip(
+                "🔍", "Improve copilot-instructions.md quality",
+                f"Found instructions in {len(repos_with_instructions)} repo(s), but "
+                f"some need improvement: [b]{names}[/b].",
+                priority=8, category="best-practice",
+                how_to=(
+                    "Quality issues detected:\n"
+                    f"{issue_text}\n\n"
+                    "Click 📝 Improve to regenerate with session data,\n"
+                    "or open the file to add missing sections manually."
+                ),
+                repo_actions=improve_actions,
+            ))
+        else:
+            names = ", ".join(_short(rp.name) for rp in repos_with_instructions[:3])
+            tips.append(Tip(
+                "✅", "Instructions file in place",
+                f"Great — {names} already {'has' if len(repos_with_instructions) == 1 else 'have'} "
+                "copilot-instructions.md! Keep it updated as your project evolves.",
+                priority=1, category="best-practice",
+            ))
     elif not habits.has_copilot_instructions:
         tips.append(Tip(
             "📋", "Add copilot-instructions.md",
@@ -1572,6 +1906,34 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             ),
             repo_actions=per_repo,
         ))
+    else:
+        # Check quality of existing context files
+        repos_with_context = [rp for rp in profiles if rp.has_context_md]
+        low_quality_ctx = [rp for rp in repos_with_context
+                          if rp.context_quality is not None and rp.context_quality < 80]
+        if low_quality_ctx:
+            names = ", ".join(
+                f"{_short(rp.name)} ({rp.context_quality}%)"
+                for rp in low_quality_ctx[:4]
+            )
+            improve_actions = _improve_repo_actions("ctx", low_quality_ctx, "context")
+            all_issues = set()
+            for rp in low_quality_ctx[:4]:
+                all_issues.update(rp.context_issues)
+            issue_text = "\n".join(f"  • {iss}" for iss in sorted(all_issues)[:6])
+            tips.append(Tip(
+                "🔍", "Improve .context.md quality",
+                f"Found .context.md in {len(repos_with_context)} repo(s), but "
+                f"some could be richer: [b]{names}[/b].",
+                priority=7, category="best-practice",
+                how_to=(
+                    "Quality issues detected:\n"
+                    f"{issue_text}\n\n"
+                    "Click 📝 Improve to regenerate from session history,\n"
+                    "or open the file to add missing sections."
+                ),
+                repo_actions=improve_actions,
+            ))
 
     # ── Testing — per-repo ──
     repos_without_tests = [

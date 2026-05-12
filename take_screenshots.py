@@ -151,13 +151,13 @@ def _demo_data() -> JourneyData:
             ),
             repo_actions=[
                 TipAction(action_id="demo-ci-1", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="instructions_md", repo_name="api-service"),
+                          smart_kind="instructions_md", repo_name="api-service", impact="🔴 High"),
                 TipAction(action_id="demo-ci-2", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="instructions_md", repo_name="infra"),
+                          smart_kind="instructions_md", repo_name="infra", impact="🟡 Medium"),
                 TipAction(action_id="demo-ci-3", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="instructions_md", repo_name="mobile-app"),
+                          smart_kind="instructions_md", repo_name="mobile-app", impact="🟡 Medium"),
                 TipAction(action_id="demo-ci-4", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="instructions_md", repo_name="shared-lib"),
+                          smart_kind="instructions_md", repo_name="shared-lib", impact="🟢 Low"),
             ]),
         Tip("🎯", "Use custom instruction files",
             "None of your repos use scoped .instructions.md files. "
@@ -175,9 +175,9 @@ def _demo_data() -> JourneyData:
             ),
             repo_actions=[
                 TipAction(action_id="demo-cust-1", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="custom_instructions", repo_name="web-app"),
+                          smart_kind="custom_instructions", repo_name="web-app", impact="🔴 High"),
                 TipAction(action_id="demo-cust-2", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="custom_instructions", repo_name="api-service"),
+                          smart_kind="custom_instructions", repo_name="api-service", impact="🟡 Medium"),
             ]),
         Tip("📁", "Add .context.md for architecture context",
             "6 repos lack .context.md files: "
@@ -193,11 +193,11 @@ def _demo_data() -> JourneyData:
             ),
             repo_actions=[
                 TipAction(action_id="demo-ctx-1", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="context_md", repo_name="web-app"),
+                          smart_kind="context_md", repo_name="web-app", impact="🔴 High"),
                 TipAction(action_id="demo-ctx-2", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="context_md", repo_name="api-service"),
+                          smart_kind="context_md", repo_name="api-service", impact="🟡 Medium"),
                 TipAction(action_id="demo-ctx-3", label="🤖 Generate", action_type="smart_create",
-                          smart_kind="context_md", repo_name="infra"),
+                          smart_kind="context_md", repo_name="infra", impact="🟢 Low"),
             ]),
         Tip("🧪", "Add tests to more repos",
             "4 repos have no test files: "
@@ -211,6 +211,27 @@ def _demo_data() -> JourneyData:
                 "Prompt: 'Write unit tests for the main module\n"
                 "  covering edge cases and error paths'"
             )),
+        Tip("🔍", "Improve copilot-instructions.md quality",
+            "Found instructions in 2 repo(s), but some need improvement: "
+            "[b]web-app (45%), docs-site (30%)[/b].",
+            priority=8, category="best-practice",
+            how_to=(
+                "Quality issues detected:\n"
+                "  • Missing section: Error handling\n"
+                "  • Missing section: Testing approach\n"
+                "  • Contains placeholder text\n\n"
+                "Click 📝 Improve to regenerate from session history."
+            ),
+            repo_actions=[
+                TipAction(action_id="demo-imp-1", label="📝 Improve (45%)",
+                          action_type="smart_create", smart_kind="instructions_md",
+                          repo_name="web-app", impact="🔴 High",
+                          quality_score=45, quality_issues=["Missing: Error handling"]),
+                TipAction(action_id="demo-imp-2", label="📝 Improve (30%)",
+                          action_type="smart_create", smart_kind="instructions_md",
+                          repo_name="docs-site", impact="🟡 Medium",
+                          quality_score=30, quality_issues=["Missing: Testing"]),
+            ]),
         Tip("🏊", "Dive deeper",
             "47% of sessions are quick Q&As. Try a longer session: "
             "describe a full feature, let Copilot scaffold and iterate.",
