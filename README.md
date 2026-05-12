@@ -10,6 +10,33 @@ Built with [Textual](https://github.com/Textualize/textual) and the Catppuccin M
   <img src="screenshots/dashboard.svg" alt="Dashboard tab" width="800">
 </p>
 
+## Quick Start
+
+```bash
+pip install git+https://github.com/timschps/copilot-journey-tui
+copilot-journey-tui
+```
+
+> Requires Python 3.10+ and an existing [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) session history. 100% offline — nothing leaves your machine.
+
+<details>
+<summary>Alternative install methods</summary>
+
+```bash
+# Clone and install locally
+git clone https://github.com/timschps/copilot-journey-tui && cd copilot-journey-tui
+pip install .
+
+# Or run without installing
+pip install textual
+python -m copilot_journey_tui
+
+# Custom database path
+copilot-journey-tui --db /path/to/session-store.db
+```
+
+</details>
+
 ## What It Does
 
 Reads your **local** Copilot CLI session history (100% offline — nothing leaves your machine) and turns it into an interactive 5-tab dashboard:
@@ -57,38 +84,6 @@ Personalized, actionable recommendations grouped by category:
 Tips that you've already adopted show as ✅ confirmations.
 
 <img src="screenshots/tips.svg" alt="Tips tab" width="800">
-
-## Install
-
-**One-liner from GitHub** (recommended):
-
-```bash
-pip install git+https://github.com/timschps/copilot-journey-tui
-```
-
-Then just run:
-
-```bash
-copilot-journey-tui
-```
-
-### Alternative install methods
-
-```bash
-# Clone and install locally
-git clone https://github.com/timschps/copilot-journey-tui && cd copilot-journey-tui
-pip install .
-
-# Or run without installing
-pip install textual
-python -m copilot_journey_tui
-```
-
-### Custom database path
-
-```bash
-copilot-journey-tui --db /path/to/session-store.db
-```
 
 ## Navigation
 
@@ -151,9 +146,3 @@ The Tips tab scans your session history for adoption signals in each repository:
 ## Privacy
 
 Everything runs locally. The TUI reads the SQLite database that the Copilot CLI already stores on your machine. No data is sent anywhere.
-
-## Requirements
-
-- Python 3.10+
-- [Textual](https://pypi.org/project/textual/) ≥ 0.70
-- An existing Copilot CLI session history (install and use the [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) first)
