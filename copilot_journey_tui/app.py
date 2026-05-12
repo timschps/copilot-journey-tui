@@ -391,12 +391,16 @@ class TipsPane(Static):
         # Per-repo action buttons — each repo gets its own clickable line
         if tip.repo_actions:
             lines.append(f"\n  [dim]{'─' * 34}[/dim]")
-            lines.append(f"  [#89dceb][b]Set up per repo:[/b][/#89dceb]")
+            is_smart = any(a.action_type == "smart_create" for a in tip.repo_actions)
+            header = "🤖 Generate from session data:" if is_smart else "⚡ Set up per repo:"
+            lines.append(f"  [#89dceb][b]{header}[/b][/#89dceb]")
             for act in tip.repo_actions:
+                emoji = "🤖" if act.action_type == "smart_create" else "⚡"
+                hint = "→ AI-generated + opens VS Code" if act.action_type == "smart_create" else "→ opens in VS Code"
                 lines.append(
                     f"  [@click=app.execute_tip_action('{act.action_id}')]"
-                    f"[bold #a6e3a1 on #45475a] ⚡ {act.repo_name} [/bold #a6e3a1 on #45475a][/]"
-                    f"  [dim]→ opens in VS Code[/dim]"
+                    f"[bold #a6e3a1 on #45475a] {emoji} {act.repo_name} [/bold #a6e3a1 on #45475a][/]"
+                    f"  [dim]{hint}[/dim]"
                 )
         # Single bulk action (e.g. MCP config — user-global)
         elif tip.action:
@@ -619,7 +623,7 @@ class JourneyApp(App):
             pass
 
     def action_execute_tip_action(self, action_id: str) -> None:
-        """Execute a tip action: create files and open in VS Code."""
+        """Execute a tip action: create files (smart or template) and open in VS Code."""
         import shutil
         import subprocess
 
@@ -633,6 +637,41 @@ class JourneyApp(App):
         if not action:
             self.notify("Action not found", severity="error")
             return
+
+        # For smart_create, generate content from session logs first
+        if action.action_type == "smart_create":
+            from copilot_journey_tui.data import (
+                generate_smart_context_md,
+                generate_smart_custom_instructions,
+                generate_smart_instructions,
+            )
+            db_path = self.data.db_path if hasattr(self.data, "db_path") else ""
+            if not db_path:
+                self.notify("No database path — falling back to template", severity="warning")
+                return
+
+            try:
+                generators = {
+                    "context_md": generate_smart_context_md,
+                    "instructions_md": generate_smart_instructions,
+                    "custom_instructions": generate_smart_custom_instructions,
+                }
+                gen_fn = generators.get(action.smart_kind)
+                if not gen_fn:
+                    self.notify(f"Unknown smart kind: {action.smart_kind}", severity="error")
+                    return
+                file_pairs = gen_fn(db_path, action.repo_full_name, action.repo_local_path)
+                # Convert to create_files format
+                action = TipAction(
+                    action_id=action.action_id,
+                    label=action.label,
+                    action_type="create_files",
+                    files=file_pairs,
+                    repo_name=action.repo_name,
+                )
+            except Exception as e:
+                self.notify(f"Smart generation failed: {e}", severity="error")
+                return
 
         if action.action_type == "create_files":
             created = []
@@ -680,18 +719,21 @@ class JourneyApp(App):
                     pass
 
             code_hint = " — opened in VS Code" if opened else ""
+            # Check if any created file is a companion prompt
+            has_prompt = any(".copilot-enhance" in f for f in created)
+            enhance_hint = "\n🤖 Use companion prompt file with Copilot Chat to enhance!" if has_prompt else ""
             if created and skipped:
                 self.notify(
                     f"✅ Created: {', '.join(os.path.basename(f) for f in created)}\n"
                     f"⏭️ Skipped: {', '.join(os.path.basename(f) for f in skipped)}"
-                    f"{code_hint}",
-                    title="Setup Complete", timeout=8,
+                    f"{code_hint}{enhance_hint}",
+                    title="Setup Complete", timeout=10,
                 )
             elif created:
                 self.notify(
                     f"✅ Created: {', '.join(os.path.basename(f) for f in created)}\n"
-                    f"Customize the template for your project!{code_hint}",
-                    title="Setup Complete", timeout=8,
+                    f"Customize for your project!{code_hint}{enhance_hint}",
+                    title="Setup Complete", timeout=10,
                 )
             elif skipped:
                 # File exists — still open it for editing

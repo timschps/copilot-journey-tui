@@ -150,14 +150,14 @@ def _demo_data() -> JourneyData:
                 "  - Coding standards & patterns"
             ),
             repo_actions=[
-                TipAction(action_id="demo-ci-1", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d1", "")], repo_name="api-service"),
-                TipAction(action_id="demo-ci-2", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d2", "")], repo_name="infra"),
-                TipAction(action_id="demo-ci-3", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d3", "")], repo_name="mobile-app"),
-                TipAction(action_id="demo-ci-4", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d4", "")], repo_name="shared-lib"),
+                TipAction(action_id="demo-ci-1", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="instructions_md", repo_name="api-service"),
+                TipAction(action_id="demo-ci-2", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="instructions_md", repo_name="infra"),
+                TipAction(action_id="demo-ci-3", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="instructions_md", repo_name="mobile-app"),
+                TipAction(action_id="demo-ci-4", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="instructions_md", repo_name="shared-lib"),
             ]),
         Tip("🎯", "Use custom instruction files",
             "None of your repos use scoped .instructions.md files. "
@@ -174,10 +174,10 @@ def _demo_data() -> JourneyData:
                 "  - Use describe/it blocks"
             ),
             repo_actions=[
-                TipAction(action_id="demo-cust-1", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d5", "")], repo_name="web-app"),
-                TipAction(action_id="demo-cust-2", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d6", "")], repo_name="api-service"),
+                TipAction(action_id="demo-cust-1", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="custom_instructions", repo_name="web-app"),
+                TipAction(action_id="demo-cust-2", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="custom_instructions", repo_name="api-service"),
             ]),
         Tip("📁", "Add .context.md for architecture context",
             "6 repos lack .context.md files: "
@@ -192,12 +192,12 @@ def _demo_data() -> JourneyData:
                 "  - JWT tokens in httpOnly cookies"
             ),
             repo_actions=[
-                TipAction(action_id="demo-ctx-1", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d7", "")], repo_name="web-app"),
-                TipAction(action_id="demo-ctx-2", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d8", "")], repo_name="api-service"),
-                TipAction(action_id="demo-ctx-3", label="⚡ Set up", action_type="create_files",
-                          files=[("/tmp/d9", "")], repo_name="infra"),
+                TipAction(action_id="demo-ctx-1", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="context_md", repo_name="web-app"),
+                TipAction(action_id="demo-ctx-2", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="context_md", repo_name="api-service"),
+                TipAction(action_id="demo-ctx-3", label="🤖 Generate", action_type="smart_create",
+                          smart_kind="context_md", repo_name="infra"),
             ]),
         Tip("🧪", "Add tests to more repos",
             "4 repos have no test files: "

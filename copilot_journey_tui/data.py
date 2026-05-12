@@ -123,6 +123,472 @@ description: {skill_desc}
 """
 
 
+# ── Smart content generators — mine session logs for project-aware files ──────
+
+def _query_repo_sessions(db_path: str, repo_name: str) -> dict:
+    """Extract rich session data for a repo. Returns a dict with all signals."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+
+    file_rows = conn.execute(
+        "SELECT DISTINCT sf.file_path FROM session_files sf "
+        "JOIN sessions s ON sf.session_id = s.id "
+        "WHERE s.repository = ? ORDER BY sf.file_path", (repo_name,)
+    ).fetchall()
+
+    summaries = conn.execute(
+        "SELECT summary FROM sessions WHERE repository = ? "
+        "AND summary IS NOT NULL AND summary != '' ORDER BY created_at DESC LIMIT 10",
+        (repo_name,)
+    ).fetchall()
+
+    checkpoints = conn.execute(
+        "SELECT c.title, c.overview, c.work_done FROM checkpoints c "
+        "JOIN sessions s ON c.session_id = s.id "
+        "WHERE s.repository = ? ORDER BY s.created_at DESC LIMIT 10",
+        (repo_name,)
+    ).fetchall()
+
+    branches = conn.execute(
+        "SELECT branch, COUNT(*) as cnt FROM sessions "
+        "WHERE repository = ? AND branch IS NOT NULL AND branch != '' "
+        "GROUP BY branch ORDER BY cnt DESC LIMIT 10",
+        (repo_name,)
+    ).fetchall()
+
+    # Grab user messages for topic analysis (first msg of each session)
+    user_msgs = conn.execute(
+        "SELECT t.user_message FROM turns t "
+        "JOIN sessions s ON t.session_id = s.id "
+        "WHERE s.repository = ? AND t.turn_index = 0 "
+        "AND t.user_message IS NOT NULL AND t.user_message != '' "
+        "ORDER BY t.timestamp DESC LIMIT 15",
+        (repo_name,)
+    ).fetchall()
+
+    conn.close()
+
+    # Analyze file extensions and directories
+    ext_ctr = Counter()
+    dir_ctr = Counter()
+    framework_hints = set()
+    has_tests = False
+    has_docs = False
+    has_cicd = False
+    file_paths = [r[0] for r in file_rows]
+
+    lang_map = {
+        ".py": "Python", ".ts": "TypeScript", ".js": "JavaScript",
+        ".go": "Go", ".rs": "Rust", ".java": "Java", ".cs": "C#",
+        ".md": "Markdown", ".bicep": "Bicep", ".tf": "Terraform",
+        ".html": "HTML", ".css": "CSS", ".json": "JSON", ".yaml": "YAML",
+        ".yml": "YAML", ".toml": "TOML", ".sh": "Shell", ".ps1": "PowerShell",
+    }
+
+    for fp in file_paths:
+        ext = os.path.splitext(fp)[1].lower()
+        if ext:
+            ext_ctr[ext] += 1
+        fpl = fp.lower().replace("\\", "/")
+        parts = fpl.split("/")
+        # Get top-level directory relative to repo (heuristic: after last known root marker)
+        if len(parts) > 1:
+            dir_ctr[parts[-2]] += 1  # parent directory of the file
+        if "test" in fpl or "spec" in fpl:
+            has_tests = True
+        if "readme" in fpl or "/docs/" in fpl:
+            has_docs = True
+        if ".github/workflows" in fpl or "dockerfile" in fpl:
+            has_cicd = True
+        base = os.path.basename(fpl)
+        fw_map = {
+            "package.json": "Node.js", "requirements.txt": "Python",
+            "pyproject.toml": "Python", "go.mod": "Go", "cargo.toml": "Rust",
+            "hugo.toml": "Hugo", "config.toml": "Hugo/TOML-based",
+        }
+        if base in fw_map:
+            framework_hints.add(fw_map[base])
+        if base.endswith(".csproj"):
+            framework_hints.add(".NET/C#")
+
+    primary_langs = []
+    for ext, cnt in ext_ctr.most_common(5):
+        lang = lang_map.get(ext, ext)
+        primary_langs.append(f"{lang} ({cnt} files)")
+
+    return {
+        "file_paths": file_paths,
+        "ext_ctr": ext_ctr,
+        "dir_ctr": dir_ctr,
+        "primary_langs": primary_langs,
+        "framework_hints": framework_hints,
+        "has_tests": has_tests, "has_docs": has_docs, "has_cicd": has_cicd,
+        "summaries": [s[0] for s in summaries],
+        "checkpoints": checkpoints,
+        "branches": branches,
+        "user_msgs": [m[0][:200] for m in user_msgs],
+    }
+
+
+def generate_smart_context_md(db_path: str, repo_name: str, repo_local_path: str) -> list:
+    """Generate .context.md pre-populated from session history.
+    Returns list of (file_path, content) tuples."""
+    data = _query_repo_sessions(db_path, repo_name)
+    short = repo_name.split("/")[-1] if "/" in repo_name else repo_name
+
+    lines = [f"# {short}\n"]
+
+    # Purpose from summaries & checkpoints
+    lines.append("## Purpose")
+    topics = set()
+    for s in data["summaries"][:5]:
+        if s and len(s) > 5:
+            topics.add(s.strip().rstrip("."))
+    if topics:
+        lines.append("Based on Copilot session history, this project involves:")
+        for t in list(topics)[:5]:
+            lines.append(f"- {t}")
+    else:
+        lines.append("_(Fill in: what does this project do?)_")
+
+    # Architecture from directory structure
+    lines.append("\n## Architecture")
+    if data["dir_ctr"]:
+        lines.append("Key directories (by files touched in Copilot sessions):")
+        for d, cnt in data["dir_ctr"].most_common(8):
+            if d and d not in (".", ""):
+                lines.append(f"- `{d}/` — {cnt} file(s)")
+    else:
+        lines.append("_(Describe key components and their responsibilities)_")
+
+    # Tech stack
+    lines.append("\n## Tech Stack")
+    if data["primary_langs"]:
+        lines.append(", ".join(data["primary_langs"]))
+    if data["framework_hints"]:
+        lines.append(f"Frameworks: {', '.join(sorted(data['framework_hints']))}")
+
+    # Work areas from checkpoints
+    if data["checkpoints"]:
+        lines.append("\n## Recent Work Areas")
+        seen = set()
+        for title, overview, _ in data["checkpoints"]:
+            if title and title not in seen:
+                seen.add(title)
+                lines.append(f"- {title}")
+
+    # Git workflow
+    if data["branches"]:
+        lines.append("\n## Branching")
+        for branch, cnt in data["branches"][:5]:
+            lines.append(f"- `{branch}` ({cnt} sessions)")
+
+    lines.append("\n## Dependencies")
+    lines.append("_(List external services or modules this depends on)_")
+    lines.append("\n## Key Invariants")
+    lines.append("_(Rules that must always hold true)_")
+
+    content = "\n".join(lines) + "\n"
+    file_path = os.path.join(repo_local_path, ".context.md")
+
+    # Also generate a companion Copilot prompt for further refinement
+    prompt = _build_copilot_refinement_prompt(short, "context", data)
+    prompt_path = os.path.join(repo_local_path, ".copilot-enhance-context.md")
+
+    return [(file_path, content), (prompt_path, prompt)]
+
+
+def generate_smart_instructions(db_path: str, repo_name: str, repo_local_path: str) -> list:
+    """Generate copilot-instructions.md pre-populated from session history.
+    Returns list of (file_path, content) tuples."""
+    data = _query_repo_sessions(db_path, repo_name)
+
+    primary_ext = data["ext_ctr"].most_common(1)[0][0] if data["ext_ctr"] else ""
+    lang_name_map = {
+        ".py": "Python", ".ts": "TypeScript", ".js": "JavaScript",
+        ".go": "Go", ".rs": "Rust", ".java": "Java", ".cs": "C#",
+    }
+
+    primary_langs = [lang_name_map.get(e, e.lstrip(".").capitalize())
+                     for e, _ in data["ext_ctr"].most_common(3) if e in lang_name_map]
+
+    lines = ["# Project Instructions for GitHub Copilot\n"]
+
+    # Language & Framework
+    lines.append("## Language & Framework")
+    if primary_langs:
+        lines.append(f"- Primary: {', '.join(primary_langs)}")
+    if data["framework_hints"]:
+        lines.append(f"- Framework: {', '.join(sorted(data['framework_hints']))}")
+
+    # Coding Standards — language-aware
+    lines.append("\n## Coding Standards")
+    lines.append("- Follow existing code style and patterns in this repo")
+    lines.append("- Use descriptive variable and function names")
+    if "Python" in primary_langs:
+        lines.extend([
+            "- Follow PEP 8 style conventions",
+            "- Use type hints for function signatures",
+            "- Prefer dataclasses over plain dicts for structured data",
+        ])
+    elif "TypeScript" in primary_langs or "JavaScript" in primary_langs:
+        lines.extend([
+            "- Prefer const over let; avoid var",
+            "- Use async/await over raw Promises",
+            "- Use strict TypeScript with explicit return types",
+        ])
+    elif "Go" in primary_langs:
+        lines.extend([
+            "- Follow Go conventions (gofmt, Effective Go)",
+            "- Handle errors explicitly — never ignore them",
+            "- Use meaningful package names",
+        ])
+    elif "C#" in primary_langs:
+        lines.extend([
+            "- Follow .NET naming conventions (PascalCase for public)",
+            "- Use async/await for I/O-bound operations",
+            "- Prefer dependency injection",
+        ])
+
+    # Error Handling
+    lines.append("\n## Error Handling")
+    lines.append("- Always handle errors explicitly")
+    lines.append("- Log errors with sufficient context for debugging")
+
+    # Testing
+    lines.append("\n## Testing")
+    if data["has_tests"]:
+        lines.append("- This project has tests — maintain and extend test coverage")
+        lines.append("- Follow existing test patterns and naming conventions")
+    else:
+        lines.append("- Write tests for new functionality")
+    lines.append("- Use AAA pattern (Arrange, Act, Assert)")
+
+    # Project context from summaries
+    if data["summaries"]:
+        lines.append("\n## Project Context")
+        lines.append("Recent work areas (from Copilot session history):")
+        seen = set()
+        for s in data["summaries"][:5]:
+            if s and len(s) > 5 and s not in seen:
+                seen.add(s)
+                lines.append(f"- {s.strip()}")
+
+    lines.append("\n## Project-Specific Notes")
+    lines.append("_(Add your project-specific conventions, preferred libraries,")
+    lines.append("  architectural patterns, and things to avoid)_")
+
+    content = "\n".join(lines) + "\n"
+    gh_dir = os.path.join(repo_local_path, ".github")
+    file_path = os.path.join(gh_dir, "copilot-instructions.md")
+
+    # Companion Copilot prompt
+    short = repo_name.split("/")[-1] if "/" in repo_name else repo_name
+    prompt = _build_copilot_refinement_prompt(short, "instructions", data)
+    prompt_path = os.path.join(repo_local_path, ".copilot-enhance-instructions.md")
+
+    return [(file_path, content), (prompt_path, prompt)]
+
+
+def generate_smart_custom_instructions(db_path: str, repo_name: str, repo_local_path: str) -> list:
+    """Generate testing.instructions.md pre-populated from session history.
+    Returns list of (file_path, content) tuples."""
+    data = _query_repo_sessions(db_path, repo_name)
+
+    primary_ext = data["ext_ctr"].most_common(1)[0][0] if data["ext_ctr"] else ".ts"
+    glob_map = {
+        ".ts": "**/*.test.ts", ".tsx": "**/*.test.tsx",
+        ".js": "**/*.test.js", ".py": "**/test_*.py",
+        ".go": "**/*_test.go", ".cs": "**/*Tests.cs",
+        ".java": "**/*Test.java", ".rs": "**/tests/**/*.rs",
+    }
+    glob_pattern = glob_map.get(primary_ext, f"**/*test*{primary_ext}")
+    lang_map = {".py": "Python", ".ts": "TypeScript", ".js": "JavaScript",
+                ".go": "Go", ".rs": "Rust", ".java": "Java", ".cs": "C#"}
+    lang = lang_map.get(primary_ext, primary_ext.lstrip(".").capitalize())
+
+    lines = [
+        "---",
+        f'applyTo: "{glob_pattern}"',
+        "---",
+        f"# Testing Guidelines ({lang})\n",
+    ]
+
+    # Language-specific test instructions
+    if primary_ext in (".ts", ".tsx", ".js", ".jsx"):
+        lines.extend([
+            "## Structure",
+            "- Use describe/it blocks for grouping",
+            "- One test file per module/component",
+            "- Name: `<module>.test.ts`\n",
+            "## Patterns",
+            "- Mock external services and API calls",
+            "- Use beforeEach/afterEach for setup/teardown",
+            "- Prefer `expect().toBe()` for primitives, `toEqual()` for objects",
+            "- Test both success and error paths",
+        ])
+    elif primary_ext == ".py":
+        lines.extend([
+            "## Structure",
+            "- Use pytest with descriptive function names: `test_should_...`",
+            "- One test file per module: `test_<module>.py`\n",
+            "## Patterns",
+            "- Use fixtures for shared setup",
+            "- Use `@pytest.mark.parametrize` for data-driven tests",
+            "- Mock external services with `unittest.mock.patch`",
+            "- Test both happy path and edge cases",
+        ])
+    elif primary_ext == ".go":
+        lines.extend([
+            "## Structure",
+            "- Test files: `<file>_test.go` in same package",
+            "- Use table-driven tests for multiple cases\n",
+            "## Patterns",
+            "- Use `t.Helper()` in test helpers",
+            "- Use `testify/assert` or standard `testing` package",
+            "- Test error returns explicitly",
+        ])
+    else:
+        lines.extend([
+            "## Structure",
+            "- Follow project conventions for test organization\n",
+            "## Patterns",
+            "- Test both success and error cases",
+            "- Mock external dependencies",
+            "- Use descriptive test names",
+        ])
+
+    # Observed test files as reference
+    test_paths = [fp for fp in data["file_paths"]
+                  if "test" in fp.lower() or "spec" in fp.lower()]
+    if test_paths:
+        lines.append("\n## Existing Test Files (for reference)")
+        for fp in test_paths[:5]:
+            lines.append(f"- `{os.path.basename(fp)}`")
+
+    lines.extend([
+        "\n## Anti-Patterns to Avoid",
+        "- Don't test implementation details",
+        "- Don't use magic numbers without explanation",
+        "- Don't skip error path testing",
+    ])
+
+    content = "\n".join(lines) + "\n"
+    file_path = os.path.join(
+        repo_local_path, ".github", "instructions", "testing.instructions.md"
+    )
+    return [(file_path, content)]
+
+
+def _build_copilot_refinement_prompt(repo_short: str, kind: str, data: dict) -> str:
+    """Build a companion prompt file that users can open in Copilot Chat
+    to further refine the generated file using AI."""
+
+    lines = [
+        f"# 🤖 Enhance {repo_short} {kind} with Copilot\n",
+        "## How to use this file",
+        "1. Open this file alongside the generated file in VS Code",
+        "2. Select all the content in the generated file",
+        "3. Use Copilot Chat (Ctrl+I or Cmd+I) and say:",
+        f'   "Enhance this {kind} file using the session data below as context"\n',
+        "You can delete this file after you're done — it's just a helper.\n",
+        "---\n",
+        "## Session Intelligence Data\n",
+        "The following data was extracted from your Copilot CLI session history",
+        f"for the **{repo_short}** project. Use it to generate richer, more",
+        "specific content.\n",
+    ]
+
+    # Summaries
+    if data["summaries"]:
+        lines.append("### Session Summaries")
+        lines.append("What you've been working on (most recent first):")
+        for s in data["summaries"]:
+            lines.append(f"- {s}")
+        lines.append("")
+
+    # Checkpoints
+    if data["checkpoints"]:
+        lines.append("### Checkpoint Details")
+        lines.append("Detailed work done in Copilot sessions:")
+        for title, overview, work_done in data["checkpoints"][:6]:
+            lines.append(f"\n**{title or '(untitled)'}**")
+            if overview:
+                lines.append(f"> {overview[:300]}")
+            if work_done:
+                # Truncate but keep useful detail
+                wd = work_done[:500].replace("\n", "\n> ")
+                lines.append(f"> {wd}")
+        lines.append("")
+
+    # File structure
+    if data["file_paths"]:
+        lines.append("### Files Touched")
+        lines.append(f"Total unique files: {len(data['file_paths'])}")
+        for fp in data["file_paths"][:30]:
+            lines.append(f"- `{os.path.basename(fp)}`")
+        if len(data["file_paths"]) > 30:
+            lines.append(f"- ... and {len(data['file_paths']) - 30} more")
+        lines.append("")
+
+    # Directory structure
+    if data["dir_ctr"]:
+        lines.append("### Directory Distribution")
+        for d, cnt in data["dir_ctr"].most_common(10):
+            if d:
+                lines.append(f"- `{d}/` → {cnt} files")
+        lines.append("")
+
+    # Languages
+    if data["primary_langs"]:
+        lines.append("### Languages")
+        lines.append(", ".join(data["primary_langs"]))
+        lines.append("")
+
+    # Frameworks
+    if data["framework_hints"]:
+        lines.append("### Frameworks Detected")
+        lines.append(", ".join(sorted(data["framework_hints"])))
+        lines.append("")
+
+    # Branches
+    if data["branches"]:
+        lines.append("### Git Branches")
+        for branch, cnt in data["branches"][:5]:
+            lines.append(f"- `{branch}` ({cnt} sessions)")
+        lines.append("")
+
+    # User prompts — rich insight into what was asked
+    if data["user_msgs"]:
+        lines.append("### User Prompts (what you asked Copilot)")
+        lines.append("These reveal the kinds of tasks and patterns in this project:")
+        for msg in data["user_msgs"][:10]:
+            # Clean up and truncate
+            clean = msg.strip().replace("\n", " ")[:150]
+            lines.append(f'- "{clean}"')
+        lines.append("")
+
+    # Suggestions based on kind
+    lines.append("---\n")
+    if kind == "context":
+        lines.extend([
+            "### Suggested Copilot Chat prompts",
+            '- "Based on the session data above, generate a detailed .context.md '
+            'that describes the architecture, key modules, data flows, and design decisions"',
+            '- "What are the main components in this project based on the file structure?"',
+            '- "Identify the key dependencies and integration points from the session history"',
+        ])
+    elif kind == "instructions":
+        lines.extend([
+            "### Suggested Copilot Chat prompts",
+            '- "Based on the session data above, generate detailed copilot-instructions.md '
+            'with project-specific coding standards, patterns, and conventions"',
+            '- "What coding patterns can you infer from the file types and session history?"',
+            '- "Generate language-specific best practices based on this project\'s tech stack"',
+        ])
+
+    return "\n".join(lines) + "\n"
+
+
 @dataclass
 class Session:
     id: str
@@ -235,11 +701,13 @@ class TipAction:
     """An executable action attached to a tip."""
     action_id: str                     # unique id, e.g. "copilot-instructions-acme-api"
     label: str                         # button text, e.g. "⚡ Set up"
-    action_type: str                   # "create_files" | "copy_prompt"
+    action_type: str                   # "create_files" | "smart_create"
     # For create_files: list of (full_path, content) tuples
     files: list = field(default_factory=list)
-    # For copy_prompt: the prompt text to suggest
-    prompt: str = ""
+    # For smart_create: generates content from session logs at click time
+    smart_kind: str = ""               # "context_md" | "instructions_md" | "custom_instructions"
+    repo_full_name: str = ""           # full repo name for DB lookup
+    repo_local_path: str = ""          # local path on disk
     # Display context
     repo_name: str = ""                # short repo name for display
 
@@ -272,6 +740,7 @@ class JourneyData:
     current_phase: int = 0
     current_score: int = 0
     sparkline_data: list = field(default_factory=list)
+    db_path: str = ""  # path to session_store.db for smart generation
 
 
 def find_database() -> str:
@@ -424,7 +893,7 @@ def load_data(db_path: str) -> JourneyData:
     bp_signals = _detect_best_practice_signals(conn, file_paths)
 
     conn.close()
-    return _analyze(sessions, file_paths, checkpoint_topics, bp_signals)
+    return _analyze(sessions, file_paths, checkpoint_topics, bp_signals, db_path)
 
 
 def _detect_best_practice_signals(conn, file_paths: list[str]) -> dict:
@@ -539,7 +1008,8 @@ def _detect_best_practice_signals(conn, file_paths: list[str]) -> dict:
 
 
 def _analyze(sessions: list[Session], file_paths: list[str],
-             checkpoint_topics: list[str], bp_signals: dict) -> JourneyData:
+             checkpoint_topics: list[str], bp_signals: dict,
+             db_path: str = "") -> JourneyData:
     active_days_set: set[str] = set()
     repos: set[str] = set()
     total_turns = total_files = 0
@@ -576,7 +1046,7 @@ def _analyze(sessions: list[Session], file_paths: list[str],
 
     habits = _compute_habits(sessions, file_paths, hour_counter, day_counter,
                              active_days_set, checkpoint_topics, bp_signals)
-    tips = _generate_tips(sessions, habits, windows, current_phase)
+    tips = _generate_tips(sessions, habits, windows, current_phase, db_path)
 
     return JourneyData(
         windows=windows,
@@ -593,6 +1063,7 @@ def _analyze(sessions: list[Session], file_paths: list[str],
         current_phase=current_phase,
         current_score=current_score,
         sparkline_data=sparkline,
+        db_path=db_path,
     )
 
 
@@ -857,7 +1328,8 @@ def _compute_habits(sessions: list[Session], file_paths: list[str],
 
 
 def _generate_tips(sessions: list[Session], habits: HabitsData,
-                   windows: list[TimeWindow], current_phase: int) -> list[Tip]:
+                   windows: list[TimeWindow], current_phase: int,
+                   db_path: str = "") -> list[Tip]:
     tips: list[Tip] = []
     n = len(sessions)
     _action_counter = [0]  # mutable counter for unique IDs
@@ -883,6 +1355,24 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 ))
         return actions
 
+    def _smart_repo_actions(prefix: str, repos: list, smart_kind: str) -> list:
+        """Build per-repo TipActions that use smart generation at click time."""
+        actions = []
+        for rp in repos[:6]:
+            if not rp.local_path:
+                continue
+            label = "🤖 Generate" if db_path else "⚡ Set up"
+            actions.append(TipAction(
+                action_id=_make_action_id(f"{prefix}-{_short(rp.name)}"),
+                label=label,
+                action_type="smart_create" if db_path else "create_files",
+                smart_kind=smart_kind,
+                repo_full_name=rp.name,
+                repo_local_path=rp.local_path,
+                repo_name=_short(rp.name),
+            ))
+        return actions
+
     # ═══════════════════════════════════════════════════════════════════════
     # BEST PRACTICES — repo-specific tips based on actual adoption gaps
     # ═══════════════════════════════════════════════════════════════════════
@@ -901,14 +1391,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     if repos_missing_instructions:
         names = ", ".join(_short(rp.name) for rp in repos_missing_instructions[:4])
 
-        def _build_instructions(rp):
-            gh_dir = os.path.join(rp.local_path, ".github")
-            path = os.path.join(gh_dir, "copilot-instructions.md")
-            lang = rp.primary_language.lstrip(".").capitalize() if rp.primary_language else "Your language"
-            content = TEMPLATE_COPILOT_INSTRUCTIONS.format(lang_hint=f"Primary: {lang}")
-            return (path, content)
-
-        per_repo = _repo_actions("ci", repos_missing_instructions, _build_instructions)
+        per_repo = _smart_repo_actions("ci", repos_missing_instructions, "instructions_md")
         tips.append(Tip(
             "📋", "Add copilot-instructions.md",
             f"{len(repos_missing_instructions)} active repo(s) lack a copilot-instructions.md: "
@@ -965,16 +1448,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     if repos_without_custom and not habits.has_custom_instructions:
         names = ", ".join(_short(rp.name) for rp in repos_without_custom[:3])
 
-        def _build_custom_instructions(rp):
-            instr_dir = os.path.join(rp.local_path, ".github", "instructions")
-            path = os.path.join(instr_dir, "testing.instructions.md")
-            content = TEMPLATE_CUSTOM_INSTRUCTIONS.format(
-                glob_pattern="**/*.test.*",
-                concern="Testing",
-            )
-            return (path, content)
-
-        per_repo = _repo_actions("cust", repos_without_custom, _build_custom_instructions)
+        per_repo = _smart_repo_actions("cust", repos_without_custom, "custom_instructions")
         tips.append(Tip(
             "🎯", "Use custom instruction files",
             f"None of your active repos ({names}) use scoped .instructions.md files. "
@@ -1078,13 +1552,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     if repos_without_context:
         names = ", ".join(_short(rp.name) for rp in repos_without_context[:4])
 
-        def _build_context(rp):
-            path = os.path.join(rp.local_path, ".context.md")
-            short = _short(rp.name)
-            content = TEMPLATE_CONTEXT_MD.format(dir_name=short)
-            return (path, content)
-
-        per_repo = _repo_actions("ctx", repos_without_context, _build_context)
+        per_repo = _smart_repo_actions("ctx", repos_without_context, "context_md")
         tips.append(Tip(
             "📁", "Add .context.md for architecture context",
             f"{len(repos_without_context)} repo(s) lack .context.md files: "
