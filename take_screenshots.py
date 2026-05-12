@@ -144,52 +144,61 @@ def _demo_data() -> JourneyData:
             how_to=(
                 "Start with your most active repo. Create\n"
                 ".github/copilot-instructions.md:\n"
-                "  → acme/api-service (.py)\n"
-                "  → acme/infra (.bicep)\n"
-                "  → acme/mobile-app (.ts)\n"
-                "  → acme/shared-lib (.ts)"
+                "  ─────────────────────────────────\n"
+                "  # Project instructions for Copilot\n"
+                "  - Language/framework preferences\n"
+                "  - Coding standards & patterns"
             ),
-            action=TipAction(
-                action_id="demo-copilot-instructions-1",
-                label="⚡ Set up now",
-                action_type="create_files",
-                files=[("/tmp/demo1", ""), ("/tmp/demo2", ""), ("/tmp/demo3", ""), ("/tmp/demo4", "")],
-            )),
+            repo_actions=[
+                TipAction(action_id="demo-ci-1", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d1", "")], repo_name="api-service"),
+                TipAction(action_id="demo-ci-2", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d2", "")], repo_name="infra"),
+                TipAction(action_id="demo-ci-3", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d3", "")], repo_name="mobile-app"),
+                TipAction(action_id="demo-ci-4", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d4", "")], repo_name="shared-lib"),
+            ]),
         Tip("🎯", "Use custom instruction files",
             "None of your repos use scoped .instructions.md files. "
             "Define per-concern rules (testing, security) that auto-apply.",
             priority=9, category="best-practice",
             how_to=(
                 "Create scoped instruction files:\n"
-                "  .github/instructions/testing.instructions.md\n"
-                "  .github/instructions/security.instructions.md\n\n"
-                "Best candidates:\n"
-                "  → acme/web-app\n"
-                "  → acme/api-service"
+                "  .github/instructions/testing.instructions.md\n\n"
+                "With auto-apply glob:\n"
+                "  ---\n"
+                "  applyTo: \"**/*.test.ts\"\n"
+                "  ---\n"
+                "  # Testing guidelines\n"
+                "  - Use describe/it blocks"
             ),
-            action=TipAction(
-                action_id="demo-custom-instructions-2",
-                label="⚡ Set up now",
-                action_type="create_files",
-                files=[("/tmp/demo5", ""), ("/tmp/demo6", "")],
-            )),
+            repo_actions=[
+                TipAction(action_id="demo-cust-1", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d5", "")], repo_name="web-app"),
+                TipAction(action_id="demo-cust-2", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d6", "")], repo_name="api-service"),
+            ]),
         Tip("📁", "Add .context.md for architecture context",
             "6 repos lack .context.md files: "
             "[b]web-app, api-service, infra, mobile-app[/b]. "
             "These give Copilot architecture awareness.",
             priority=8, category="best-practice",
             how_to=(
-                "Create .context.md in key directories:\n"
-                "  → acme/web-app/ (.ts, 85 files)\n"
-                "  → acme/api-service/ (.py, 62 files)\n"
-                "  → acme/infra/ (.bicep, 38 files)"
+                "Create .context.md in key directories:\n\n"
+                "Example content:\n"
+                "  # Authentication Module\n"
+                "  ## Architecture\n"
+                "  - JWT tokens in httpOnly cookies"
             ),
-            action=TipAction(
-                action_id="demo-context-md-3",
-                label="⚡ Set up now",
-                action_type="create_files",
-                files=[("/tmp/demo7", ""), ("/tmp/demo8", ""), ("/tmp/demo9", "")],
-            )),
+            repo_actions=[
+                TipAction(action_id="demo-ctx-1", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d7", "")], repo_name="web-app"),
+                TipAction(action_id="demo-ctx-2", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d8", "")], repo_name="api-service"),
+                TipAction(action_id="demo-ctx-3", label="⚡ Set up", action_type="create_files",
+                          files=[("/tmp/d9", "")], repo_name="infra"),
+            ]),
         Tip("🧪", "Add tests to more repos",
             "4 repos have no test files: "
             "[b]infra, docs-site, mobile-app, blog[/b]. "

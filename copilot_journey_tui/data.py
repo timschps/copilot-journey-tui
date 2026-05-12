@@ -233,13 +233,15 @@ class HabitsData:
 @dataclass
 class TipAction:
     """An executable action attached to a tip."""
-    action_id: str                     # unique id, e.g. "create-copilot-instructions-3"
-    label: str                         # button text, e.g. "⚡ Set up now"
+    action_id: str                     # unique id, e.g. "copilot-instructions-acme-api"
+    label: str                         # button text, e.g. "⚡ Set up"
     action_type: str                   # "create_files" | "copy_prompt"
     # For create_files: list of (full_path, content) tuples
     files: list = field(default_factory=list)
     # For copy_prompt: the prompt text to suggest
     prompt: str = ""
+    # Display context
+    repo_name: str = ""                # short repo name for display
 
 
 @dataclass
@@ -250,7 +252,8 @@ class Tip:
     priority: int = 0  # higher = more relevant
     category: str = ""  # "habit", "best-practice", "phase"
     how_to: str = ""  # actionable how-to steps
-    action: Optional[TipAction] = None  # executable action
+    action: Optional[TipAction] = None  # bulk action (kept for backward compat)
+    repo_actions: list = field(default_factory=list)  # per-repo actions
 
 
 @dataclass
@@ -863,23 +866,22 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
         _action_counter[0] += 1
         return f"{prefix}-{_action_counter[0]}"
 
-    def _file_action(prefix: str, repos: list, build_fn) -> Optional[TipAction]:
-        """Build a TipAction that creates template files in repos with known local paths."""
-        targets = []
-        for rp in repos[:4]:
+    def _repo_actions(prefix: str, repos: list, build_fn) -> list:
+        """Build per-repo TipActions for repos with known local paths."""
+        actions = []
+        for rp in repos[:6]:
             if not rp.local_path:
                 continue
             path, content = build_fn(rp)
             if path and content:
-                targets.append((path, content))
-        if not targets:
-            return None
-        return TipAction(
-            action_id=_make_action_id(prefix),
-            label="⚡ Set up now",
-            action_type="create_files",
-            files=targets,
-        )
+                actions.append(TipAction(
+                    action_id=_make_action_id(f"{prefix}-{_short(rp.name)}"),
+                    label="⚡ Set up",
+                    action_type="create_files",
+                    files=[(path, content)],
+                    repo_name=_short(rp.name),
+                ))
+        return actions
 
     # ═══════════════════════════════════════════════════════════════════════
     # BEST PRACTICES — repo-specific tips based on actual adoption gaps
@@ -906,7 +908,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             content = TEMPLATE_COPILOT_INSTRUCTIONS.format(lang_hint=f"Primary: {lang}")
             return (path, content)
 
-        action = _file_action("copilot-instructions", repos_missing_instructions, _build_instructions)
+        per_repo = _repo_actions("ci", repos_missing_instructions, _build_instructions)
         tips.append(Tip(
             "📋", "Add copilot-instructions.md",
             f"{len(repos_missing_instructions)} active repo(s) lack a copilot-instructions.md: "
@@ -917,18 +919,13 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "Start with your most active repo. Create\n"
                 ".github/copilot-instructions.md:\n"
                 "  ─────────────────────────────────\n"
-                + "\n".join(
-                    f"  → {rp.name} ({rp.primary_language or 'mixed'})"
-                    for rp in repos_missing_instructions[:4]
-                ) + "\n"
-                "  ─────────────────────────────────\n"
                 "  # Project instructions for Copilot\n"
                 "  - Language/framework preferences\n"
                 "  - Coding standards & patterns\n"
                 "  - Libraries to use or avoid\n"
                 "  - Error handling conventions"
             ),
-            action=action,
+            repo_actions=per_repo,
         ))
     elif repos_with_instructions:
         names = ", ".join(_short(rp.name) for rp in repos_with_instructions[:3])
@@ -977,7 +974,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             )
             return (path, content)
 
-        action = _file_action("custom-instructions", repos_without_custom, _build_custom_instructions)
+        per_repo = _repo_actions("cust", repos_without_custom, _build_custom_instructions)
         tips.append(Tip(
             "🎯", "Use custom instruction files",
             f"None of your active repos ({names}) use scoped .instructions.md files. "
@@ -985,20 +982,17 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             "that auto-apply based on file patterns.",
             priority=9, category="best-practice",
             how_to=(
-                "Create scoped instruction files in any repo:\n"
-                "  .github/instructions/testing.instructions.md\n"
-                "  .github/instructions/security.instructions.md\n\n"
+                "Create scoped instruction files:\n"
+                "  .github/instructions/testing.instructions.md\n\n"
                 "With auto-apply glob:\n"
                 "  ---\n"
                 "  applyTo: \"**/*.test.ts\"\n"
                 "  ---\n"
                 "  # Testing guidelines\n"
                 "  - Use describe/it blocks\n"
-                "  - Mock external services\n\n"
-                "Best candidates:\n"
-                + "\n".join(f"  → {rp.name}" for rp in repos_without_custom[:3])
+                "  - Mock external services"
             ),
-            action=action,
+            repo_actions=per_repo,
         ))
 
     # ── MCP config ──
@@ -1056,14 +1050,14 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             )
             return (path, content)
 
-        action = _file_action("skill", repos_without_skills, _build_skill)
+        per_repo = _repo_actions("skill", repos_without_skills, _build_skill)
         tips.append(Tip(
             "⚡", "Build a custom skill",
             f"No SKILL.md files found. Skills encapsulate reusable Copilot workflows "
             f"— deploy checkers, code reviewers, data transforms. Try in: [b]{names}[/b].",
             priority=6, category="best-practice",
             how_to=(
-                "Create skills/<name>/SKILL.md in your repo:\n"
+                "Create skills/<name>/SKILL.md:\n"
                 "  ---\n"
                 "  name: deploy-checker\n"
                 "  description: Validates deploy readiness\n"
@@ -1072,11 +1066,9 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "  ## Steps\n"
                 "  1. Check for uncommitted changes\n"
                 "  2. Run test suite\n"
-                "  3. Validate env variables\n\n"
-                "Best candidates:\n"
-                + "\n".join(f"  → {rp.name}" for rp in repos_without_skills[:3])
+                "  3. Validate env variables"
             ),
-            action=action,
+            repo_actions=per_repo,
         ))
 
     # ── .context.md — per-repo ──
@@ -1092,7 +1084,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             content = TEMPLATE_CONTEXT_MD.format(dir_name=short)
             return (path, content)
 
-        action = _file_action("context-md", repos_without_context, _build_context)
+        per_repo = _repo_actions("ctx", repos_without_context, _build_context)
         tips.append(Tip(
             "📁", "Add .context.md for architecture context",
             f"{len(repos_without_context)} repo(s) lack .context.md files: "
@@ -1100,12 +1092,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
             "relationships, data flows, design decisions.",
             priority=8, category="best-practice",
             how_to=(
-                "Create .context.md in key directories:\n"
-                + "\n".join(
-                    f"  → {rp.name}/ ({rp.primary_language or 'mixed'}, "
-                    f"{rp.file_count} files)"
-                    for rp in repos_without_context[:4]
-                ) + "\n\n"
+                "Create .context.md in key directories:\n\n"
                 "Example content:\n"
                 "  # Authentication Module\n"
                 "  ## Architecture\n"
@@ -1115,7 +1102,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "  ## Invariants\n"
                 "  - Tokens expire after 15 minutes"
             ),
-            action=action,
+            repo_actions=per_repo,
         ))
 
     # ── Testing — per-repo ──

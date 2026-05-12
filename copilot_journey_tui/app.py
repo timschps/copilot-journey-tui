@@ -387,14 +387,25 @@ class TipsPane(Static):
             lines.append(f"  [#89dceb][b]How to:[/b][/#89dceb]")
             for ht_line in tip.how_to.split("\n"):
                 lines.append(f"  [dim]{ht_line}[/dim]")
-        if tip.action:
+
+        # Per-repo action buttons — each repo gets its own clickable line
+        if tip.repo_actions:
+            lines.append(f"\n  [dim]{'─' * 34}[/dim]")
+            lines.append(f"  [#89dceb][b]Set up per repo:[/b][/#89dceb]")
+            for act in tip.repo_actions:
+                lines.append(
+                    f"  [@click=app.execute_tip_action('{act.action_id}')]"
+                    f"[bold #a6e3a1 on #45475a] ⚡ {act.repo_name} [/bold #a6e3a1 on #45475a][/]"
+                    f"  [dim]→ opens in VS Code[/dim]"
+                )
+        # Single bulk action (e.g. MCP config — user-global)
+        elif tip.action:
             lines.append(f"\n  [dim]{'─' * 34}[/dim]")
             act = tip.action
-            n_files = len(act.files) if act.action_type == "create_files" else 0
-            scope = f" ({n_files} file{'s' if n_files != 1 else ''})" if n_files else ""
             lines.append(
                 f"  [@click=app.execute_tip_action('{act.action_id}')]"
-                f"[bold #a6e3a1 on #313244] {act.label}{scope} [/bold #a6e3a1 on #313244][/]"
+                f"[bold #a6e3a1 on #45475a] {act.label} [/bold #a6e3a1 on #45475a][/]"
+                f"  [dim]→ opens in VS Code[/dim]"
             )
         return "\n".join(lines)
 
@@ -404,11 +415,13 @@ class TipsPane(Static):
             yield Static("  ✅ No tips — you're doing great!", classes="card")
             return
 
-        # Build action registry (stored on app for lookup)
+        # Build action registry for click-to-action lookup
         self._action_registry: dict[str, TipAction] = {}
         for t in tips:
             if t.action:
                 self._action_registry[t.action.action_id] = t.action
+            for ra in t.repo_actions:
+                self._action_registry[ra.action_id] = ra
 
         # Count by category
         cats = {}
@@ -420,7 +433,7 @@ class TipsPane(Static):
 
         bp_count = len(cats.get("best-practice", []))
         habit_count = len(cats.get("habit", []))
-        actionable = sum(1 for t in tips if t.action)
+        actionable = sum(1 for t in tips if t.action or t.repo_actions)
         action_hint = f" · {actionable} actionable" if actionable else ""
         yield Label(
             f"[b]💡 {len(tips)} Personalized Tips[/b]  "
@@ -606,7 +619,10 @@ class JourneyApp(App):
             pass
 
     def action_execute_tip_action(self, action_id: str) -> None:
-        """Execute a tip action (create files, etc.)."""
+        """Execute a tip action: create files and open in VS Code."""
+        import shutil
+        import subprocess
+
         # Look up action from tips pane registry
         try:
             tips_pane = self.query_one(TipsPane)
@@ -621,38 +637,67 @@ class JourneyApp(App):
         if action.action_type == "create_files":
             created = []
             skipped = []
+            all_paths = []
             for file_path, content in action.files:
+                all_paths.append(file_path)
                 if os.path.exists(file_path):
-                    skipped.append(os.path.basename(file_path))
+                    skipped.append(file_path)
                     continue
                 try:
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
                     with open(file_path, "w", encoding="utf-8") as f:
                         f.write(content)
-                    created.append(os.path.basename(file_path))
+                    created.append(file_path)
                 except Exception as e:
                     self.notify(f"Failed: {e}", severity="error")
                     return
 
+            # Open in VS Code: repo root + created/existing file
+            has_code = shutil.which("code") is not None
+            opened = False
+            if has_code and all_paths:
+                # Determine repo root from action's repo context or file path
+                target = created[0] if created else skipped[0]
+                repo_root = os.path.dirname(target)
+                # Walk up to find .git directory (repo root)
+                check = repo_root
+                for _ in range(10):
+                    if os.path.isdir(os.path.join(check, ".git")):
+                        repo_root = check
+                        break
+                    parent = os.path.dirname(check)
+                    if parent == check:
+                        break
+                    check = parent
+                try:
+                    subprocess.Popen(
+                        ["code", repo_root, "--goto", target],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    opened = True
+                except Exception:
+                    pass
+
+            code_hint = " — opened in VS Code" if opened else ""
             if created and skipped:
                 self.notify(
-                    f"✅ Created {len(created)} file(s): {', '.join(created)}\n"
-                    f"⏭️ Skipped {len(skipped)} (already exist)",
-                    title="Setup Complete",
-                    timeout=8,
+                    f"✅ Created: {', '.join(os.path.basename(f) for f in created)}\n"
+                    f"⏭️ Skipped: {', '.join(os.path.basename(f) for f in skipped)}"
+                    f"{code_hint}",
+                    title="Setup Complete", timeout=8,
                 )
             elif created:
                 self.notify(
-                    f"✅ Created {len(created)} file(s): {', '.join(created)}\n"
-                    "Edit them to customize for your project!",
-                    title="Setup Complete",
-                    timeout=8,
+                    f"✅ Created: {', '.join(os.path.basename(f) for f in created)}\n"
+                    f"Customize the template for your project!{code_hint}",
+                    title="Setup Complete", timeout=8,
                 )
-            else:
+            elif skipped:
+                # File exists — still open it for editing
                 self.notify(
-                    f"⏭️ All {len(skipped)} file(s) already exist — nothing to do",
-                    title="Already Set Up",
-                    timeout=5,
+                    f"⏭️ Already exists — opening for review{code_hint}",
+                    title="Already Set Up", timeout=5,
                 )
         else:
             self.notify(f"Unknown action type: {action.action_type}", severity="warning")
