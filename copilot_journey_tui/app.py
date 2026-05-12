@@ -71,11 +71,11 @@ class DashboardPane(Static):
         with Horizontal(classes="row"):
             yield Static(
                 f"[b]📊 Overview[/b]\n\n"
-                f"  Sessions     [b]{d.total_sessions}[/b]\n"
-                f"  Active Days  [b]{d.active_days}[/b]\n"
-                f"  Files        [b]{d.total_files:,}[/b]\n"
-                f"  Turns        [b]{d.total_turns:,}[/b]\n"
-                f"  Repos        [b]{d.unique_repos}[/b]",
+                f"  Sessions     [b]{d.total_sessions}[/b]  [dim]total Copilot conversations[/dim]\n"
+                f"  Active Days  [b]{d.active_days}[/b]  [dim]days with ≥1 session[/dim]\n"
+                f"  Files        [b]{d.total_files:,}[/b]  [dim]unique files created/edited[/dim]\n"
+                f"  Turns        [b]{d.total_turns:,}[/b]  [dim]total prompt↔response exchanges[/dim]\n"
+                f"  Repos        [b]{d.unique_repos}[/b]  [dim]distinct repositories[/dim]",
                 classes="card",
             )
 
@@ -89,7 +89,10 @@ class DashboardPane(Static):
                 f"[b]🏆 Current Phase[/b]\n\n"
                 f"  [{color}]{emoji} {name}[/{color}]\n\n"
                 f"  [{color}]{bar}[/{color}]\n"
-                f"  Score: [b]{d.current_score}[/b]/18 ({pct}%)",
+                f"  Score: [b]{d.current_score}[/b]/18 ({pct}%)\n\n"
+                f"  [dim]Score = sum of 6 dimensions (0–3 each)\n"
+                f"  Explorer 0–6 │ Builder 7–11\n"
+                f"  Orchestrator 12–15 │ Architect 16–18[/dim]",
                 classes="card",
             )
 
@@ -122,7 +125,8 @@ class DashboardPane(Static):
                 roi_lines.append(f"  {label} {b} [b]{value:.0f}h[/b]")
             roi_lines.append(
                 f"\n  [dim]Q&A:{d.roi.quick_qa} Code:{d.roi.code_gen} "
-                f"Deep:{d.roi.deep_build} Flow:{d.roi.workflow}[/dim]"
+                f"Deep:{d.roi.deep_build} Flow:{d.roi.workflow}[/dim]\n"
+                f"  [dim]Q&A=<5 turns │ Code=5-15 │ Deep=15-30 │ Flow=30+[/dim]"
             )
             yield Static("\n".join(roi_lines), classes="card")
 
@@ -144,7 +148,7 @@ class HabitsPane(Static):
             total_tod = h.morning + h.afternoon + h.evening + h.night
             max_tod = max(h.morning, h.afternoon, h.evening, h.night, 1)
             tod_lines = [
-                "[b]🕐 Time of Day[/b]\n",
+                "[b]🕐 Time of Day[/b]  [dim]when you start sessions[/dim]\n",
                 f"  ☀️  Morning  (6-12)  {_bar(h.morning, max_tod, 16, '#f9e2af')} {h.morning}",
                 f"  🌤️  Afternoon(12-17) {_bar(h.afternoon, max_tod, 16, '#fab387')} {h.afternoon}",
                 f"  🌙 Evening  (17-22) {_bar(h.evening, max_tod, 16, '#89b4fa')} {h.evening}",
@@ -159,7 +163,7 @@ class HabitsPane(Static):
 
             # Day-of-week distribution
             max_day = max((h.day_distribution.get(d, 0) for d in DAY_ORDER), default=1)
-            dow_lines = ["[b]📅 Day of Week[/b]\n"]
+            dow_lines = ["[b]📅 Day of Week[/b]  [dim]sessions per day[/dim]\n"]
             for day in DAY_ORDER:
                 cnt = h.day_distribution.get(day, 0)
                 c = "#a6e3a1" if day in ("Sat", "Sun") else "#89b4fa"
@@ -169,7 +173,7 @@ class HabitsPane(Static):
 
         # ── Row 2: Top repos + Top languages ──
         with Horizontal(classes="row"):
-            repo_lines = ["[b]📂 Top Repositories[/b]\n"]
+            repo_lines = ["[b]📂 Top Repositories[/b]  [dim]by session count[/dim]\n"]
             if h.top_repos:
                 max_r = h.top_repos[0][1]
                 for repo, cnt in h.top_repos[:6]:
@@ -181,7 +185,7 @@ class HabitsPane(Static):
                 repo_lines.append("  [dim]No repository data[/dim]")
             yield Static("\n".join(repo_lines), classes="card")
 
-            lang_lines = ["[b]🧬 Languages & File Types[/b]\n"]
+            lang_lines = ["[b]🧬 Languages & File Types[/b]  [dim]files touched[/dim]\n"]
             if h.top_extensions:
                 max_e = h.top_extensions[0][1]
                 ext_colors = {
@@ -203,11 +207,15 @@ class HabitsPane(Static):
         with Horizontal(classes="row"):
             sd = h.session_size_dist
             max_sd = max(sd.values(), default=1)
-            size_lines = ["[b]📏 Session Depth Distribution[/b]\n"]
+            size_lines = ["[b]📏 Session Depth Distribution[/b]  [dim]turns per session[/dim]\n"]
             size_colors = ["#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8"]
             for (label, cnt), sc in zip(sd.items(), size_colors):
                 size_lines.append(f"  {label:<18} {_bar(cnt, max_sd, 14, sc)} {cnt}")
-            size_lines.append(f"\n  [dim]Median: {h.median_turns} turns/session[/dim]")
+            size_lines.append(
+                f"\n  [dim]Median: {h.median_turns} turns/session\n"
+                f"  Quick=Q&A │ Medium=feature work\n"
+                f"  Deep=complex build │ Marathon=full feature[/dim]"
+            )
             yield Static("\n".join(size_lines), classes="card")
 
             streak_lines = [
@@ -216,6 +224,9 @@ class HabitsPane(Static):
                 f"  Current Streak   [b]{h.current_streak}[/b] day(s)",
                 f"  Avg Msg Length   [b]{h.avg_msg_length}[/b] chars",
                 f"  Longest Session  [b]{h.longest_session_turns}[/b] turns",
+                "",
+                f"  [dim]Streak = consecutive days with ≥1 session[/dim]",
+                f"  [dim]Msg length = avg chars per prompt you send[/dim]",
             ]
             if h.longest_session_summary:
                 streak_lines.append(
