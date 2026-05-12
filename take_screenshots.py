@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from copilot_journey_tui.data import (
     JourneyData, TimeWindow, Milestone, ROIEstimate, HabitsData, Tip,
-    RepoProfile, Phase,
+    RepoProfile, Phase, TipAction,
 )
 from copilot_journey_tui.app import JourneyApp
 from datetime import datetime, timedelta
@@ -148,6 +148,12 @@ def _demo_data() -> JourneyData:
                 "  → acme/infra (.bicep)\n"
                 "  → acme/mobile-app (.ts)\n"
                 "  → acme/shared-lib (.ts)"
+            ),
+            action=TipAction(
+                action_id="demo-copilot-instructions-1",
+                label="⚡ Set up now",
+                action_type="create_files",
+                files=[("/tmp/demo1", ""), ("/tmp/demo2", ""), ("/tmp/demo3", ""), ("/tmp/demo4", "")],
             )),
         Tip("🎯", "Use custom instruction files",
             "None of your repos use scoped .instructions.md files. "
@@ -160,6 +166,12 @@ def _demo_data() -> JourneyData:
                 "Best candidates:\n"
                 "  → acme/web-app\n"
                 "  → acme/api-service"
+            ),
+            action=TipAction(
+                action_id="demo-custom-instructions-2",
+                label="⚡ Set up now",
+                action_type="create_files",
+                files=[("/tmp/demo5", ""), ("/tmp/demo6", "")],
             )),
         Tip("📁", "Add .context.md for architecture context",
             "6 repos lack .context.md files: "
@@ -171,6 +183,12 @@ def _demo_data() -> JourneyData:
                 "  → acme/web-app/ (.ts, 85 files)\n"
                 "  → acme/api-service/ (.py, 62 files)\n"
                 "  → acme/infra/ (.bicep, 38 files)"
+            ),
+            action=TipAction(
+                action_id="demo-context-md-3",
+                label="⚡ Set up now",
+                action_type="create_files",
+                files=[("/tmp/demo7", ""), ("/tmp/demo8", ""), ("/tmp/demo9", "")],
             )),
         Tip("🧪", "Add tests to more repos",
             "4 repos have no test files: "

@@ -1,10 +1,12 @@
 """Data loading and analysis for Copilot Journey TUI."""
 
+import os
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 
 class Phase:
@@ -28,6 +30,97 @@ class Phase:
     @staticmethod
     def color(phase: int) -> str:
         return Phase.COLORS.get(phase, "#cdd6f4")
+
+
+# ── File templates for actionable tips ──────────────────────────────────────
+
+TEMPLATE_COPILOT_INSTRUCTIONS = """\
+# Project Instructions for GitHub Copilot
+
+## Language & Framework
+- {lang_hint}
+
+## Coding Standards
+- Follow existing code style and patterns
+- Use descriptive variable and function names
+- Prefer composition over inheritance
+
+## Error Handling
+- Always handle errors explicitly
+- Use try/catch for async operations
+- Log errors with context
+
+## Testing
+- Write tests for new functionality
+- Follow AAA pattern (Arrange, Act, Assert)
+
+## Project-Specific Notes
+- (Add your project conventions here)
+"""
+
+TEMPLATE_CUSTOM_INSTRUCTIONS = """\
+---
+applyTo: "{glob_pattern}"
+---
+# {concern} Guidelines
+
+## Rules
+- (Add your {concern}-specific rules here)
+
+## Patterns to Follow
+- (Describe preferred patterns)
+
+## Anti-Patterns to Avoid
+- (List things to avoid)
+"""
+
+TEMPLATE_CONTEXT_MD = """\
+# {dir_name} Module
+
+## Purpose
+(Describe what this module/directory does)
+
+## Architecture
+- (Key components and their responsibilities)
+- (Data flow between components)
+
+## Dependencies
+- (External services or modules this depends on)
+
+## Key Invariants
+- (Rules that must always hold true)
+"""
+
+TEMPLATE_MCP_JSON = """\
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  }
+}
+"""
+
+TEMPLATE_SKILL_MD = """\
+---
+name: {skill_name}
+description: {skill_desc}
+---
+# {skill_name}
+
+## What This Skill Does
+(Describe the skill's purpose)
+
+## Steps
+1. Analyze the current codebase
+2. (Add your workflow steps)
+3. Report results
+
+## Output Format
+- Summary of findings
+- Recommended actions
+"""
 
 
 @dataclass
@@ -97,6 +190,7 @@ class RepoProfile:
     has_docs: bool = False
     has_cicd: bool = False
     primary_language: str = ""         # dominant extension
+    local_path: str = ""               # local filesystem path (from session cwd)
 
 
 @dataclass
@@ -137,6 +231,18 @@ class HabitsData:
 
 
 @dataclass
+class TipAction:
+    """An executable action attached to a tip."""
+    action_id: str                     # unique id, e.g. "create-copilot-instructions-3"
+    label: str                         # button text, e.g. "⚡ Set up now"
+    action_type: str                   # "create_files" | "copy_prompt"
+    # For create_files: list of (full_path, content) tuples
+    files: list = field(default_factory=list)
+    # For copy_prompt: the prompt text to suggest
+    prompt: str = ""
+
+
+@dataclass
 class Tip:
     emoji: str
     title: str
@@ -144,6 +250,7 @@ class Tip:
     priority: int = 0  # higher = more relevant
     category: str = ""  # "habit", "best-practice", "phase"
     how_to: str = ""  # actionable how-to steps
+    action: Optional[TipAction] = None  # executable action
 
 
 @dataclass
@@ -374,6 +481,16 @@ def _detect_best_practice_signals(conn, file_paths: list[str]) -> dict:
 
         for repo_name, sess_cnt in repo_rows:
             rp = RepoProfile(name=repo_name, session_count=sess_cnt)
+
+            # Resolve local path from most-used cwd for this repo
+            cwd_row = conn.execute(
+                "SELECT cwd, COUNT(*) as cnt FROM sessions "
+                "WHERE repository = ? AND cwd IS NOT NULL AND cwd != '' "
+                "GROUP BY cwd ORDER BY cnt DESC LIMIT 1",
+                (repo_name,)
+            ).fetchone()
+            if cwd_row:
+                rp.local_path = cwd_row[0]
             # Get all files touched in this repo
             file_rows = conn.execute(
                 "SELECT DISTINCT sf.file_path FROM session_files sf "
@@ -740,6 +857,29 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                    windows: list[TimeWindow], current_phase: int) -> list[Tip]:
     tips: list[Tip] = []
     n = len(sessions)
+    _action_counter = [0]  # mutable counter for unique IDs
+
+    def _make_action_id(prefix: str) -> str:
+        _action_counter[0] += 1
+        return f"{prefix}-{_action_counter[0]}"
+
+    def _file_action(prefix: str, repos: list, build_fn) -> Optional[TipAction]:
+        """Build a TipAction that creates template files in repos with known local paths."""
+        targets = []
+        for rp in repos[:4]:
+            if not rp.local_path:
+                continue
+            path, content = build_fn(rp)
+            if path and content:
+                targets.append((path, content))
+        if not targets:
+            return None
+        return TipAction(
+            action_id=_make_action_id(prefix),
+            label="⚡ Set up now",
+            action_type="create_files",
+            files=targets,
+        )
 
     # ═══════════════════════════════════════════════════════════════════════
     # BEST PRACTICES — repo-specific tips based on actual adoption gaps
@@ -758,6 +898,15 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
 
     if repos_missing_instructions:
         names = ", ".join(_short(rp.name) for rp in repos_missing_instructions[:4])
+
+        def _build_instructions(rp):
+            gh_dir = os.path.join(rp.local_path, ".github")
+            path = os.path.join(gh_dir, "copilot-instructions.md")
+            lang = rp.primary_language.lstrip(".").capitalize() if rp.primary_language else "Your language"
+            content = TEMPLATE_COPILOT_INSTRUCTIONS.format(lang_hint=f"Primary: {lang}")
+            return (path, content)
+
+        action = _file_action("copilot-instructions", repos_missing_instructions, _build_instructions)
         tips.append(Tip(
             "📋", "Add copilot-instructions.md",
             f"{len(repos_missing_instructions)} active repo(s) lack a copilot-instructions.md: "
@@ -779,6 +928,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "  - Libraries to use or avoid\n"
                 "  - Error handling conventions"
             ),
+            action=action,
         ))
     elif repos_with_instructions:
         names = ", ".join(_short(rp.name) for rp in repos_with_instructions[:3])
@@ -817,6 +967,17 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     ]
     if repos_without_custom and not habits.has_custom_instructions:
         names = ", ".join(_short(rp.name) for rp in repos_without_custom[:3])
+
+        def _build_custom_instructions(rp):
+            instr_dir = os.path.join(rp.local_path, ".github", "instructions")
+            path = os.path.join(instr_dir, "testing.instructions.md")
+            content = TEMPLATE_CUSTOM_INSTRUCTIONS.format(
+                glob_pattern="**/*.test.*",
+                concern="Testing",
+            )
+            return (path, content)
+
+        action = _file_action("custom-instructions", repos_without_custom, _build_custom_instructions)
         tips.append(Tip(
             "🎯", "Use custom instruction files",
             f"None of your active repos ({names}) use scoped .instructions.md files. "
@@ -837,10 +998,21 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "Best candidates:\n"
                 + "\n".join(f"  → {rp.name}" for rp in repos_without_custom[:3])
             ),
+            action=action,
         ))
 
     # ── MCP config ──
     if not habits.has_mcp_config:
+        # MCP config goes in user home, not per-repo
+        mcp_path = os.path.join(str(Path.home()), ".copilot", "mcp.json")
+        mcp_action = None
+        if not os.path.exists(mcp_path):
+            mcp_action = TipAction(
+                action_id=_make_action_id("mcp-config"),
+                label="⚡ Set up now",
+                action_type="create_files",
+                files=[(mcp_path, TEMPLATE_MCP_JSON)],
+            )
         tips.append(Tip(
             "🔌", "Set up MCP servers",
             "MCP (Model Context Protocol) lets Copilot connect to external "
@@ -858,6 +1030,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "  }\n\n"
                 "Popular: GitHub, Azure, filesystem, databases."
             ),
+            action=mcp_action,
         ))
     else:
         tips.append(Tip(
@@ -873,6 +1046,17 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     ]
     if repos_without_skills and not habits.has_skills:
         names = ", ".join(_short(rp.name) for rp in repos_without_skills[:3])
+
+        def _build_skill(rp):
+            skill_dir = os.path.join(rp.local_path, "skills", "code-reviewer")
+            path = os.path.join(skill_dir, "SKILL.md")
+            content = TEMPLATE_SKILL_MD.format(
+                skill_name="code-reviewer",
+                skill_desc="Reviews code for common issues and suggests improvements",
+            )
+            return (path, content)
+
+        action = _file_action("skill", repos_without_skills, _build_skill)
         tips.append(Tip(
             "⚡", "Build a custom skill",
             f"No SKILL.md files found. Skills encapsulate reusable Copilot workflows "
@@ -892,6 +1076,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "Best candidates:\n"
                 + "\n".join(f"  → {rp.name}" for rp in repos_without_skills[:3])
             ),
+            action=action,
         ))
 
     # ── .context.md — per-repo ──
@@ -900,6 +1085,14 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
     ]
     if repos_without_context:
         names = ", ".join(_short(rp.name) for rp in repos_without_context[:4])
+
+        def _build_context(rp):
+            path = os.path.join(rp.local_path, ".context.md")
+            short = _short(rp.name)
+            content = TEMPLATE_CONTEXT_MD.format(dir_name=short)
+            return (path, content)
+
+        action = _file_action("context-md", repos_without_context, _build_context)
         tips.append(Tip(
             "📁", "Add .context.md for architecture context",
             f"{len(repos_without_context)} repo(s) lack .context.md files: "
@@ -922,6 +1115,7 @@ def _generate_tips(sessions: list[Session], habits: HabitsData,
                 "  ## Invariants\n"
                 "  - Tokens expire after 15 minutes"
             ),
+            action=action,
         ))
 
     # ── Testing — per-repo ──

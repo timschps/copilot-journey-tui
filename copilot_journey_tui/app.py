@@ -1,5 +1,6 @@
 """Copilot Journey TUI — A beautiful terminal dashboard for your Copilot CLI learning journey."""
 
+import os
 import sys
 
 from textual.app import App, ComposeResult
@@ -12,7 +13,7 @@ from textual.widgets import (
 
 from rich.text import Text
 
-from copilot_journey_tui.data import JourneyData, Phase, find_database, load_data
+from copilot_journey_tui.data import JourneyData, Phase, TipAction, find_database, load_data
 
 # ── Phase metadata ──────────────────────────────────────────────────────────
 
@@ -365,7 +366,7 @@ class TipsPane(Static):
         super().__init__()
         self.data = data
 
-    def _render_tip(self, tip) -> str:
+    def _render_tip(self, tip, tip_index: int) -> str:
         priority_color = (
             "#f38ba8" if tip.priority >= 8 else
             "#f9e2af" if tip.priority >= 5 else
@@ -386,6 +387,15 @@ class TipsPane(Static):
             lines.append(f"  [#89dceb][b]How to:[/b][/#89dceb]")
             for ht_line in tip.how_to.split("\n"):
                 lines.append(f"  [dim]{ht_line}[/dim]")
+        if tip.action:
+            lines.append(f"\n  [dim]{'─' * 34}[/dim]")
+            act = tip.action
+            n_files = len(act.files) if act.action_type == "create_files" else 0
+            scope = f" ({n_files} file{'s' if n_files != 1 else ''})" if n_files else ""
+            lines.append(
+                f"  [@click=app.execute_tip_action('{act.action_id}')]"
+                f"[bold #a6e3a1 on #313244] {act.label}{scope} [/bold #a6e3a1 on #313244][/]"
+            )
         return "\n".join(lines)
 
     def compose(self) -> ComposeResult:
@@ -393,6 +403,12 @@ class TipsPane(Static):
         if not tips:
             yield Static("  ✅ No tips — you're doing great!", classes="card")
             return
+
+        # Build action registry (stored on app for lookup)
+        self._action_registry: dict[str, TipAction] = {}
+        for t in tips:
+            if t.action:
+                self._action_registry[t.action.action_id] = t.action
 
         # Count by category
         cats = {}
@@ -404,14 +420,17 @@ class TipsPane(Static):
 
         bp_count = len(cats.get("best-practice", []))
         habit_count = len(cats.get("habit", []))
+        actionable = sum(1 for t in tips if t.action)
+        action_hint = f" · {actionable} actionable" if actionable else ""
         yield Label(
             f"[b]💡 {len(tips)} Personalized Tips[/b]  "
-            f"[dim]({bp_count} best practices · {habit_count} habit insights)[/dim]",
+            f"[dim]({bp_count} best practices · {habit_count} habit insights{action_hint})[/dim]",
             classes="section-label",
         )
 
         # Show each category
         cat_order = ["best-practice", "habit", "phase", ""]
+        tip_idx = 0
         for cat in cat_order:
             cat_tips = cats.get(cat, [])
             if not cat_tips:
@@ -427,14 +446,16 @@ class TipsPane(Static):
             for i in range(0, len(cat_tips), 2):
                 with Horizontal(classes="row"):
                     yield Static(
-                        self._render_tip(cat_tips[i]),
+                        self._render_tip(cat_tips[i], tip_idx),
                         classes="card tip-card",
                     )
+                    tip_idx += 1
                     if i + 1 < len(cat_tips):
                         yield Static(
-                            self._render_tip(cat_tips[i + 1]),
+                            self._render_tip(cat_tips[i + 1], tip_idx),
                             classes="card tip-card",
                         )
+                        tip_idx += 1
 
 
 # ── Main app ────────────────────────────────────────────────────────────────
@@ -583,6 +604,58 @@ class JourneyApp(App):
                 walk.page += 1
         except Exception:
             pass
+
+    def action_execute_tip_action(self, action_id: str) -> None:
+        """Execute a tip action (create files, etc.)."""
+        # Look up action from tips pane registry
+        try:
+            tips_pane = self.query_one(TipsPane)
+            action = tips_pane._action_registry.get(action_id)
+        except Exception:
+            action = None
+
+        if not action:
+            self.notify("Action not found", severity="error")
+            return
+
+        if action.action_type == "create_files":
+            created = []
+            skipped = []
+            for file_path, content in action.files:
+                if os.path.exists(file_path):
+                    skipped.append(os.path.basename(file_path))
+                    continue
+                try:
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    created.append(os.path.basename(file_path))
+                except Exception as e:
+                    self.notify(f"Failed: {e}", severity="error")
+                    return
+
+            if created and skipped:
+                self.notify(
+                    f"✅ Created {len(created)} file(s): {', '.join(created)}\n"
+                    f"⏭️ Skipped {len(skipped)} (already exist)",
+                    title="Setup Complete",
+                    timeout=8,
+                )
+            elif created:
+                self.notify(
+                    f"✅ Created {len(created)} file(s): {', '.join(created)}\n"
+                    "Edit them to customize for your project!",
+                    title="Setup Complete",
+                    timeout=8,
+                )
+            else:
+                self.notify(
+                    f"⏭️ All {len(skipped)} file(s) already exist — nothing to do",
+                    title="Already Set Up",
+                    timeout=5,
+                )
+        else:
+            self.notify(f"Unknown action type: {action.action_type}", severity="warning")
 
 
 def main():
