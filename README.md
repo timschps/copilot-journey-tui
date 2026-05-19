@@ -6,6 +6,8 @@ Built with [Textual](https://github.com/Textualize/textual) and the Catppuccin M
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
+🏪 Also available on [Tiny Tool Town](https://www.tinytooltown.com/tools/copilot-journey-tui/)
+
 <p align="center">
   <img src="screenshots/dashboard.svg" alt="Dashboard tab" width="800">
 </p>
